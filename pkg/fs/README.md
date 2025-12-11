@@ -133,7 +133,7 @@ if err != nil {
 
 // Upload a file to the folder
 content := strings.NewReader("file content")
-file, err := spectraFS.UploadFile(folder.Id, content)
+file, err := spectraFS.UploadFile(folder.ServiceID, content)
 if err != nil {
     log.Fatal(err)
 }

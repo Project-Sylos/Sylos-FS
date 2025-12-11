@@ -82,7 +82,7 @@ func (s *SpectraFS) ListChildren(identifier string) (types.ListResult, error) {
 	// Convert Spectra nodes to our internal format
 	for _, node := range listResult.Folders {
 		result.Folders = append(result.Folders, types.Folder{
-			Id:           node.ID,
+			ServiceID:    node.ID,
 			ParentId:     identifier,
 			ParentPath:   types.NormalizeParentPath(node.ParentPath),
 			DisplayName:  node.Name,
@@ -95,7 +95,7 @@ func (s *SpectraFS) ListChildren(identifier string) (types.ListResult, error) {
 
 	for _, node := range listResult.Files {
 		result.Files = append(result.Files, types.File{
-			Id:           node.ID,
+			ServiceID:    node.ID,
 			ParentId:     identifier,
 			ParentPath:   types.NormalizeParentPath(node.ParentPath), // parent's relative path
 			DisplayName:  node.Name,
@@ -146,7 +146,7 @@ func (s *SpectraFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	}
 
 	return types.Folder{
-		Id:           node.ID,
+		ServiceID:    node.ID,
 		ParentId:     parentId,
 		ParentPath:   types.NormalizeParentPath(node.ParentPath),
 		DisplayName:  node.Name,
@@ -184,7 +184,7 @@ func (s *SpectraFS) UploadFile(destId string, content io.Reader) (types.File, er
 	normalizedPath := types.NormalizeLocationPath(node.Path)
 
 	return types.File{
-		Id:           node.ID,
+		ServiceID:    node.ID,
 		ParentId:     destId,
 		ParentPath:   types.NormalizeParentPath(node.ParentPath),
 		DisplayName:  node.Name,

@@ -24,7 +24,7 @@ const (
 
 // Folder represents a basic folder with attributes like name, path, identifier, and parentID.
 type Folder struct {
-	Id           string
+	ServiceID    string
 	ParentId     string
 	ParentPath   string // The parent's relative path (root-relative)
 	DisplayName  string
@@ -34,7 +34,7 @@ type Folder struct {
 	Type         string // "folder"
 }
 
-func (f Folder) ID() string       { return f.Id }
+func (f Folder) ID() string       { return f.ServiceID }
 func (f Folder) Name() string     { return f.DisplayName }
 func (f Folder) Path() string     { return f.LocationPath }
 func (f Folder) ParentID() string { return f.ParentId }
@@ -42,7 +42,7 @@ func (f Folder) NodeType() string { return f.Type }
 
 // File represents a basic file with attributes like name, path, identifier, and parentID.
 type File struct {
-	Id           string
+	ServiceID    string
 	ParentId     string
 	ParentPath   string // The parent's relative path (root-relative)
 	DisplayName  string
@@ -53,7 +53,7 @@ type File struct {
 	Type         string // "file"
 }
 
-func (f File) ID() string       { return f.Id }
+func (f File) ID() string       { return f.ServiceID }
 func (f File) Name() string     { return f.DisplayName }
 func (f File) Path() string     { return f.LocationPath }
 func (f File) ParentID() string { return f.ParentId }

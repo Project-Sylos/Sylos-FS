@@ -80,7 +80,7 @@ func (l *LocalFS) ListChildren(identifier string) (types.ListResult, error) {
 
 		if entry.IsDir() {
 			result.Folders = append(result.Folders, types.Folder{
-				Id:           fullPath,      // physical identifier
+				ServiceID:    fullPath,      // physical identifier
 				ParentId:     identifier,    // parent physical path
 				ParentPath:   parentRelPath, // parent's relative path
 				DisplayName:  entry.Name(),
@@ -90,7 +90,7 @@ func (l *LocalFS) ListChildren(identifier string) (types.ListResult, error) {
 			})
 		} else {
 			result.Files = append(result.Files, types.File{
-				Id:           fullPath,
+				ServiceID:    fullPath,
 				ParentId:     identifier,
 				ParentPath:   parentRelPath, // parent's relative path
 				DisplayName:  entry.Name(),
@@ -146,7 +146,7 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	relPath := l.relativize(name, parentRelPath)
 
 	return types.Folder{
-		Id:           fullPath,
+		ServiceID:    fullPath,
 		ParentId:     parentId,
 		ParentPath:   parentRelPath,
 		DisplayName:  name,
@@ -200,7 +200,7 @@ func (l *LocalFS) UploadFile(destId string, content io.Reader) (types.File, erro
 	relPath := l.relativize(nodeName, parentRelPath)
 
 	return types.File{
-		Id:           destId,
+		ServiceID:    destId,
 		ParentId:     parentDir, // Note: this is the absolute parent path, not destId's parent
 		ParentPath:   parentRelPath,
 		DisplayName:  nodeName,
