@@ -542,7 +542,7 @@ func (m *ServiceManager) ListDrives(ctx context.Context, serviceID string) ([]ty
 
 			drives = append(drives, types.DriveInfo{
 				Path:        drivePath,
-				DisplayName: string(letter) + ":",
+				DisplayName: string(letter),
 				Type:        driveType,
 			})
 		}
