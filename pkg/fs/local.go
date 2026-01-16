@@ -4,6 +4,7 @@
 package fs
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,9 +106,14 @@ func (l *LocalFS) ListChildren(identifier string) (types.ListResult, error) {
 	return result, nil
 }
 
-// DownloadFile opens the absolute file path (identifier) for streaming.
-func (l *LocalFS) DownloadFile(identifier string) (io.ReadCloser, error) {
-	return os.Open(identifier)
+// OpenRead opens the absolute file path (identifier) and returns a readable stream.
+// The worker owns the copy loop - this just provides the stream.
+func (l *LocalFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
+	file, err := os.Open(fileID)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
 }
 
 // CreateFolder creates a new folder under a parent absolute path.
@@ -156,18 +162,17 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	}, nil
 }
 
-// UploadFile writes a new file at dest identifier.
-func (l *LocalFS) UploadFile(destId string, content io.Reader) (types.File, error) {
-	// Normalize destination path
-	normalizedDestId := strings.ReplaceAll(destId, "\\", "/")
-
-	// Get parent directory and normalize it
-	parentDir := filepath.Dir(normalizedDestId)
-	parentDir = strings.ReplaceAll(parentDir, "\\", "/")
+// CreateFile creates an empty file at the destination path with metadata.
+// The file is created and immediately closed, ready for OpenWrite to open it for writing.
+func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
+	// Build full path
+	fullPath := filepath.Join(parentID, name)
+	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
 	// Get parent's relative path by stripping root
+	normalizedParentId := strings.ReplaceAll(parentID, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
-	p := strings.ReplaceAll(filepath.Clean(parentDir), "\\", "/")
+	p := strings.ReplaceAll(filepath.Clean(normalizedParentId), "\\", "/")
 	var parentRelPath string
 	if p == root || p == root+"/" {
 		parentRelPath = "/"
@@ -182,33 +187,45 @@ func (l *LocalFS) UploadFile(destId string, content io.Reader) (types.File, erro
 		parentRelPath = "/"
 	}
 
-	nodeName := filepath.Base(normalizedDestId)
-	f, err := os.Create(destId)
+	// Create empty file
+	f, err := os.Create(fullPath)
 	if err != nil {
 		return types.File{}, err
 	}
-	defer f.Close()
-
-	n, err := io.Copy(f, content)
-	if err != nil {
+	if err := f.Close(); err != nil {
 		return types.File{}, err
 	}
 
-	info, _ := os.Stat(destId)
+	// Get file info for metadata
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return types.File{}, err
+	}
 
 	// Use parent's relative path to build file's relative path
-	relPath := l.relativize(nodeName, parentRelPath)
+	relPath := l.relativize(name, parentRelPath)
 
 	return types.File{
-		ServiceID:    destId,
-		ParentId:     parentDir, // Note: this is the absolute parent path, not destId's parent
+		ServiceID:    fullPath,
+		ParentId:     parentID,
 		ParentPath:   parentRelPath,
-		DisplayName:  nodeName,
+		DisplayName:  name,
 		LocationPath: relPath,
 		LastUpdated:  info.ModTime().Format(time.RFC3339),
-		Size:         n,
+		Size:         size, // Use provided size (may be 0 initially)
 		Type:         types.NodeTypeFile,
 	}, nil
+}
+
+// OpenWrite opens an existing file for writing in truncate mode.
+// The file should already exist from CreateFile. The worker writes to this stream,
+// and Close() commits the write.
+func (l *LocalFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	file, err := os.OpenFile(fileID, os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
 }
 
 // NormalizePath cleans and normalizes any incoming path string.

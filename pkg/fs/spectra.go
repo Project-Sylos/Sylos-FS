@@ -4,9 +4,13 @@
 package fs
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Project-Sylos/Spectra/sdk"
@@ -20,8 +24,9 @@ type SpectraFS struct {
 	world  string // The world name ("primary", "s1", "s2", etc.) for filtering queries
 }
 
-// NewSpectraFS constructs a new SpectraFS adapter.
-// rootID is the node ID (typically "root"), and world is the world name ("primary", "s1", etc.).
+// newSpectraFS creates a SpectraFS adapter from a session-owned SDK instance.
+// The adapter does not own the lifecycle of the SDK instance - the session does.
+// This function does NOT validate the root node - it assumes the session is valid.
 func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string) (*SpectraFS, error) {
 	if spectraFS == nil {
 		return nil, fmt.Errorf("spectra filesystem instance cannot be nil")
@@ -31,17 +36,10 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string) (*Spect
 		world = "primary" // Default to primary world if not specified
 	}
 
-	// Validate that the root node exists using request struct
-	rootNode, err := spectraFS.GetNode(&sdk.GetNodeRequest{
-		ID: rootID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("invalid root node ID '%s': %w", rootID, err)
-	}
-
-	if rootNode.Type != types.NodeTypeFolder {
-		return nil, fmt.Errorf("root node must be a folder, got type: %s", rootNode.Type)
-	}
+	// Note: We do NOT validate the root node here because:
+	// 1. The session is responsible for ensuring the SDK is valid
+	// 2. Validation will happen on first use (e.g., ListChildren)
+	// 3. This matches the Migration-Engine pattern of creating adapters without validation
 
 	return &SpectraFS{
 		fs:     spectraFS,
@@ -121,15 +119,16 @@ func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int) (*types.Li
 	return types.NewListPager(result, pageSize), nil
 }
 
-// DownloadFile retrieves file data from Spectra and returns it as a ReadCloser.
-func (s *SpectraFS) DownloadFile(identifier string) (io.ReadCloser, error) {
+// OpenRead retrieves file data from Spectra and returns a readable stream.
+// The worker owns the copy loop - this just provides the stream.
+func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
 	// Get file data from Spectra
-	fileData, _, err := s.fs.GetFileData(identifier)
+	fileData, _, err := s.fs.GetFileData(fileID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert file data to ReadCloser
+	// Return plain reader - worker handles the copy loop
 	return io.NopCloser(strings.NewReader(string(fileData))), nil
 }
 
@@ -157,59 +156,191 @@ func (s *SpectraFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	}, nil
 }
 
-// UploadFile uploads a file to Spectra under the specified parent node.
-// For Spectra, destId is interpreted as the parent folder ID where the file should be uploaded.
-func (s *SpectraFS) UploadFile(destId string, content io.Reader) (types.File, error) {
-	// Read all content
-	data, err := io.ReadAll(content)
-	if err != nil {
-		return types.File{}, err
-	}
+// CreateFile creates a file entry in Spectra with metadata only.
+// The actual file data will be uploaded when OpenWrite().Close() is called.
+// This avoids uploading empty data, which the Spectra SDK now rejects.
+func (s *SpectraFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
+	// Don't upload anything yet - just return metadata.
+	// The file will be created with actual data when OpenWrite().Close() is called.
+	// We encode parentID and name in the ServiceID so OpenWrite can retrieve them.
+	// Format: "pending:<parentID>:<name>" - this is a temporary identifier.
 
-	// Generate a name for the file (in a real scenario, this might come from metadata)
-	fileName := fmt.Sprintf("uploaded_file_%d", time.Now().Unix())
-
-	// Upload file to Spectra using request struct with world
-	// For Spectra, destId is the parent folder ID
-	node, err := s.fs.UploadFile(&sdk.UploadFileRequest{
-		ParentID:  destId,
-		Name:      fileName,
-		Data:      data,
-		TableName: s.world, // Upload to the configured world
+	// Get parent node to construct the path
+	parentNode, err := s.fs.GetNode(&sdk.GetNodeRequest{
+		ID: parentID,
 	})
 	if err != nil {
-		return types.File{}, err
+		return types.File{}, fmt.Errorf("failed to get parent node: %w", err)
 	}
 
-	normalizedPath := types.NormalizeLocationPath(node.Path)
+	// Construct the expected path (Spectra will generate the actual path on upload)
+	parentPath := types.NormalizeParentPath(parentNode.ParentPath)
+	var expectedPath string
+	if parentPath == "/" {
+		expectedPath = "/" + name
+	} else {
+		expectedPath = parentPath + "/" + name
+	}
+
+	// Return a File with a pending ServiceID that encodes parentID and name
+	// Format: "pending:<parentID>:<name>" - OpenWrite will parse this
+	pendingID := fmt.Sprintf("pending:%s:%s", parentID, name)
 
 	return types.File{
-		ServiceID:    node.ID,
-		ParentId:     destId,
-		ParentPath:   types.NormalizeParentPath(node.ParentPath),
-		DisplayName:  node.Name,
-		LocationPath: normalizedPath,
-		LastUpdated:  node.LastUpdated.Format(time.RFC3339),
-		Size:         node.Size,
-		DepthLevel:   node.DepthLevel,
+		ServiceID:    pendingID, // Temporary ID - will be replaced when file is actually created
+		ParentId:     parentID,
+		ParentPath:   parentPath,
+		DisplayName:  name,
+		LocationPath: types.NormalizeLocationPath(expectedPath),
+		LastUpdated:  time.Now().Format(time.RFC3339),
+		Size:         size,                      // Use provided size (may be 0 initially)
+		DepthLevel:   parentNode.DepthLevel + 1, // Child is one level deeper
 		Type:         types.NodeTypeFile,
 	}, nil
+}
+
+// OpenWrite returns a WriteCloser that buffers writes internally.
+// Since Spectra SDK requires all data upfront, this buffers in memory or to a temp file.
+// On Close(), it creates the file in Spectra with the actual data.
+// The fileID must be a "pending:" ID returned from CreateFile().
+func (s *SpectraFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	if !strings.HasPrefix(fileID, "pending:") {
+		return nil, fmt.Errorf("OpenWrite requires a pending file ID from CreateFile(), got: %s", fileID)
+	}
+	return newSpectraWriteCloser(s, fileID), nil
+}
+
+// spectraWriteCloser buffers writes and uploads to Spectra on Close().
+type spectraWriteCloser struct {
+	spectraFS *SpectraFS
+	fileID    string
+	buffer    *bytes.Buffer
+	tempFile  *os.File
+	useTemp   bool
+	mu        sync.Mutex
+	closed    bool
+}
+
+// newSpectraWriteCloser creates a new buffering WriteCloser for Spectra.
+// It uses memory buffer initially, and can spill to temp file for large writes.
+func newSpectraWriteCloser(spectraFS *SpectraFS, fileID string) *spectraWriteCloser {
+	return &spectraWriteCloser{
+		spectraFS: spectraFS,
+		fileID:    fileID,
+		buffer:    &bytes.Buffer{},
+		useTemp:   false,
+		closed:    false,
+	}
+}
+
+// Write buffers data. For large files, it may spill to a temp file.
+func (swc *spectraWriteCloser) Write(p []byte) (int, error) {
+	swc.mu.Lock()
+	defer swc.mu.Unlock()
+
+	if swc.closed {
+		return 0, fmt.Errorf("write to closed writer")
+	}
+
+	// Use memory buffer for small files (< 10MB)
+	// For larger files, spill to temp file
+	const memoryThreshold = 10 * 1024 * 1024 // 10MB
+
+	if !swc.useTemp && swc.buffer.Len()+len(p) > memoryThreshold {
+		// Spill to temp file
+		tempFile, err := os.CreateTemp("", "spectra-upload-*")
+		if err != nil {
+			return 0, fmt.Errorf("failed to create temp file: %w", err)
+		}
+
+		// Write existing buffer to temp file
+		if _, err := tempFile.Write(swc.buffer.Bytes()); err != nil {
+			tempFile.Close()
+			os.Remove(tempFile.Name())
+			return 0, fmt.Errorf("failed to write buffer to temp file: %w", err)
+		}
+
+		swc.tempFile = tempFile
+		swc.buffer = nil
+		swc.useTemp = true
+	}
+
+	if swc.useTemp {
+		return swc.tempFile.Write(p)
+	}
+
+	return swc.buffer.Write(p)
+}
+
+// Close uploads the buffered data to Spectra, creating the file with actual data.
+// The fileID must be a "pending:" ID from CreateFile().
+func (swc *spectraWriteCloser) Close() error {
+	swc.mu.Lock()
+	defer swc.mu.Unlock()
+
+	if swc.closed {
+		return nil
+	}
+	swc.closed = true
+
+	var data []byte
+	var err error
+
+	if swc.useTemp {
+		// Read from temp file
+		if swc.tempFile != nil {
+			// Seek to beginning
+			if _, err := swc.tempFile.Seek(0, 0); err != nil {
+				swc.tempFile.Close()
+				os.Remove(swc.tempFile.Name())
+				return fmt.Errorf("failed to seek temp file: %w", err)
+			}
+
+			// Read all data
+			data, err = io.ReadAll(swc.tempFile)
+			swc.tempFile.Close()
+			tempName := swc.tempFile.Name()
+			os.Remove(tempName) // Clean up temp file
+
+			if err != nil {
+				return fmt.Errorf("failed to read temp file: %w", err)
+			}
+		}
+	} else {
+		// Read from memory buffer
+		data = swc.buffer.Bytes()
+	}
+
+	// Parse the pending ID to get parentID and name
+	// Format: "pending:<parentID>:<name>"
+	if !strings.HasPrefix(swc.fileID, "pending:") {
+		return fmt.Errorf("invalid file ID format: expected pending ID, got %s", swc.fileID)
+	}
+
+	parts := strings.SplitN(swc.fileID, ":", 3)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid pending file ID format: %s", swc.fileID)
+	}
+	parentID := parts[1]
+	name := parts[2]
+
+	// Create the file with actual data
+	_, err = swc.spectraFS.fs.UploadFile(&sdk.UploadFileRequest{
+		ParentID:  parentID,
+		Name:      name,
+		Data:      data,
+		TableName: swc.spectraFS.world,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create file with data: %w", err)
+	}
+
+	return nil
 }
 
 // NormalizePath normalizes a Spectra node ID or path string.
 func (s *SpectraFS) NormalizePath(path string) string {
 	return types.NormalizeLocationPath(path)
-}
-
-// Close closes the underlying Spectra SDK instance.
-// This should be called during graceful shutdown to ensure proper cleanup.
-// Note: Multiple SpectraFS adapters may share the same SDK instance, so Close()
-// should only be called once per SDK instance to avoid panics.
-func (s *SpectraFS) Close() error {
-	if s.fs != nil {
-		return s.fs.Close()
-	}
-	return nil
 }
 
 // GetSDKInstance returns the underlying Spectra SDK instance.

@@ -29,6 +29,11 @@ The `LocalFS` adapter provides access to the local operating system filesystem. 
 
 ```go
 import (
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "strings"
     "github.com/Project-Sylos/Sylos-FS/pkg/fs"
     "github.com/Project-Sylos/Sylos-FS/pkg/types"
 )
@@ -55,12 +60,20 @@ for _, file := range result.Files {
     fmt.Printf("File: %s (size: %d bytes)\n", file.DisplayName, file.Size)
 }
 
-// Download a file
-reader, err := localFS.DownloadFile("/home/user/documents/file.txt")
+// Open a file for reading (worker owns the copy loop)
+ctx := context.Background()
+reader, err := localFS.OpenRead(ctx, "/home/user/documents/file.txt")
 if err != nil {
     log.Fatal(err)
 }
 defer reader.Close()
+
+// Worker reads from the stream (e.g., using io.Copy to another writer)
+data, err := io.ReadAll(reader)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Read %d bytes\n", len(data))
 
 // Create a new folder
 folder, err := localFS.CreateFolder("/home/user/documents", "new-folder")
@@ -69,13 +82,31 @@ if err != nil {
 }
 fmt.Printf("Created folder: %s\n", folder.LocationPath)
 
-// Upload a file
-content := strings.NewReader("file content here")
-file, err := localFS.UploadFile("/home/user/documents/new-file.txt", content)
+// Create a file with metadata, then write to it
+file, err := localFS.CreateFile(ctx, "/home/user/documents", "new-file.txt", 0, nil)
 if err != nil {
     log.Fatal(err)
 }
-fmt.Printf("Uploaded file: %s (%d bytes)\n", file.DisplayName, file.Size)
+
+// Open the file for writing
+writer, err := localFS.OpenWrite(ctx, file.ServiceID)
+if err != nil {
+    log.Fatal(err)
+}
+defer writer.Close()
+
+// Worker writes to the stream (e.g., using io.Copy from a reader)
+content := strings.NewReader("file content here")
+_, err = io.Copy(writer, content)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Close commits the write
+if err := writer.Close(); err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Uploaded file: %s\n", file.DisplayName)
 ```
 
 #### Path Handling
@@ -102,6 +133,9 @@ The `SpectraFS` adapter provides access to the Spectra filesystem simulator. It 
 
 ```go
 import (
+    "fmt"
+    "io"
+    "log"
     "github.com/Project-Sylos/Sylos-FS/pkg/fs"
     "github.com/Project-Sylos/Spectra/sdk"
 )
@@ -131,10 +165,43 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Upload a file to the folder
-content := strings.NewReader("file content")
-file, err := spectraFS.UploadFile(folder.ServiceID, content)
+// Open a file for reading (worker owns the copy loop)
+ctx := context.Background()
+reader, err := spectraFS.OpenRead(ctx, file.ServiceID)
 if err != nil {
+    log.Fatal(err)
+}
+defer reader.Close()
+
+// Worker reads from the stream
+data, err := io.ReadAll(reader)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Read %d bytes\n", len(data))
+
+// Create a file with metadata, then write to it
+newFile, err := spectraFS.CreateFile(ctx, folder.ServiceID, "new-file.txt", 0, nil)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Open the file for writing
+writer, err := spectraFS.OpenWrite(ctx, newFile.ServiceID)
+if err != nil {
+    log.Fatal(err)
+}
+defer writer.Close()
+
+// Worker writes to the stream
+content := strings.NewReader("file content")
+_, err = io.Copy(writer, content)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Close commits the write
+if err := writer.Close(); err != nil {
     log.Fatal(err)
 }
 ```
@@ -147,6 +214,73 @@ Spectra supports multiple "worlds" which are separate data contexts:
 - **s1, s2, etc.**: Secondary worlds, typically used as destinations
 
 When creating a `SpectraFS` adapter, you specify which world to operate in. All operations (list, create, upload) will be scoped to that world.
+
+## Streaming Operations
+
+Both `LocalFS` and `SpectraFS` support streaming operations where the worker owns the copy loop. FS adapters expose streams (`io.ReadCloser` for reads, `io.WriteCloser` for writes), and the worker uses standard `io.Copy` to transfer data.
+
+### Key Principles
+
+1. **Workers own the loop**: Worker code does `io.Copy(dstWriter, srcReader)`, not the FS layer
+2. **FS implementations handle buffering**: If a provider can't stream, it buffers internally (memory or disk)
+3. **Close commits**: `WriteCloser.Close()` finalizes the upload; if it fails, upload failed
+4. **Standard interfaces**: Uses standard `io.Reader`/`io.Writer` interfaces
+
+### Worker Pattern
+
+The standard pattern for copying files between adapters:
+
+```go
+import (
+    "context"
+    "io"
+    "log"
+
+    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
+)
+
+ctx := context.Background()
+
+// Open source file for reading
+srcReader, err := srcAdapter.OpenRead(ctx, srcFileID)
+if err != nil {
+    log.Fatal(err)
+}
+defer srcReader.Close()
+
+// Create destination file with metadata
+dstFile, err := dstAdapter.CreateFile(ctx, parentID, name, size, metadata)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Open destination file for writing
+dstWriter, err := dstAdapter.OpenWrite(ctx, dstFile.ServiceID)
+if err != nil {
+    log.Fatal(err)
+}
+defer dstWriter.Close()
+
+// Worker owns the copy loop
+// Use GetCopyBuffer() for optimal performance (default 8MB, or specify custom size)
+buffer := fs.GetCopyBuffer(0) // 0 = use default 8MB
+_, err = io.CopyBuffer(dstWriter, srcReader, buffer)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Close commits the write
+if err := dstWriter.Close(); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Implementation Details
+
+- **LocalFS**: `OpenRead` returns `*os.File`, `OpenWrite` returns `*os.File` opened in write mode
+- **SpectraFS**: `OpenRead` returns a reader over file data. `OpenWrite` buffers internally (memory for small files, temp file for large files) and uploads on `Close()`
+
+The buffering in SpectraFS is an implementation detail - the worker just sees a `WriteCloser`.
 
 ## Service Manager
 
@@ -403,6 +537,9 @@ Filesystem adapters (`LocalFS` and `SpectraFS`) are not thread-safe by themselve
 3. **Handle pagination properly**: Check `HasMore` and adjust `Offset` to get all results
 4. **Validate paths**: For local services with restricted roots, validate paths before operations
 5. **Use context cancellation**: Pass contexts to long-running operations for cancellation support
+6. **Worker owns the copy loop**: Use `io.Copy` or `io.CopyBuffer` in worker code, not in FS adapters
+7. **Always close streams**: Always close `ReadCloser` and `WriteCloser` instances when done
+8. **Close commits writes**: For `WriteCloser`, check the error returned by `Close()` - it finalizes the upload
 
 ## Performance Considerations
 
@@ -410,6 +547,42 @@ Filesystem adapters (`LocalFS` and `SpectraFS`) are not thread-safe by themselve
 - **Pagination**: Use appropriate page sizes (50-100 items) to balance memory and network usage
 - **Path normalization**: Path normalization is done automatically but has minimal overhead
 - **Concurrent access**: ServiceManager operations are safe for concurrent use
+- **Streaming for large files**: FS adapters handle buffering internally - use `io.CopyBuffer` with appropriate buffer sizes in worker code
+- **Buffer size**: Use `fs.GetCopyBuffer()` helper function for optimal buffer sizes. Default is 8MB, but you can specify a custom size. For high-performance scenarios, 64MB buffers may be appropriate.
+- **Spectra buffering**: SpectraFS automatically spills to temp files for files larger than 10MB
+
+### Copy Buffer Configuration
+
+The `fs` package provides a helper function for getting optimized copy buffers:
+
+```go
+import (
+    "io"
+    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
+)
+
+// Use default 8MB buffer
+buffer := fs.GetCopyBuffer(0)
+defer func() {
+    // Buffer can be reused or will be GC'd
+}()
+_, err := io.CopyBuffer(dstWriter, srcReader, buffer)
+
+// Or specify custom size (e.g., 64MB for high-performance scenarios)
+buffer := fs.GetCopyBuffer(64 * 1024 * 1024)
+_, err := io.CopyBuffer(dstWriter, srcReader, buffer)
+```
+
+**Default buffer size**: 8MB (`fs.DefaultCopyBufferSize`)
+- This is significantly larger than Go's default 32KB buffer
+- Reduces system call overhead for large file transfers
+- Good balance between memory usage and performance
+
+**Custom buffer sizes**:
+- Pass 0 or negative value to use default (8MB)
+- Pass a positive value (in bytes) for custom size
+- Common sizes: 8MB (default), 16MB, 32MB, 64MB
+- Larger buffers reduce system calls but use more memory
 
 ## See Also
 

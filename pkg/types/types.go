@@ -4,6 +4,7 @@
 package types
 
 import (
+	"context"
 	"io"
 	"path"
 	"strings"
@@ -165,9 +166,10 @@ func (p *ListPager) Next() (page ListPage, hasPage bool) {
 // FSAdapter is the interface that all filesystem adapters must implement
 type FSAdapter interface {
 	ListChildren(identifier string) (ListResult, error)
-	DownloadFile(identifier string) (io.ReadCloser, error)
+	OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error)
 	CreateFolder(parentId, name string) (Folder, error)
-	UploadFile(destId string, content io.Reader) (File, error)
+	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
+	OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error)
 	NormalizePath(path string) string
 }
 
@@ -227,6 +229,7 @@ type ListChildrenRequest struct {
 	ServiceID   string
 	Identifier  string
 	Role        string // "source" or "destination" - used to map "spectra" to the correct world
+	SessionID   string // Session ID for Spectra services (required for Spectra, ignored for others)
 	Offset      int    // Pagination offset (default: 0)
 	Limit       int    // Pagination limit (default: 100, max: 1000)
 	FoldersOnly bool   // If true, only return folders and apply limit to folders only

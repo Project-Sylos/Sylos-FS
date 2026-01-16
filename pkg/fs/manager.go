@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Project-Sylos/Spectra/sdk"
 	"github.com/Project-Sylos/Sylos-FS/pkg/types"
 )
 
@@ -30,7 +29,7 @@ type serviceDefinition = types.ServiceDefinition // alias for internal use
 
 type serviceConnection struct {
 	typ      types.ServiceType
-	spectra  *sdk.SpectraFS
+	session  *SpectraSession // For Spectra services, use session instead of raw SDK
 	refCount int
 }
 
@@ -42,11 +41,125 @@ func NewServiceManager() *ServiceManager {
 	}
 }
 
-// LoadServices loads services from the provided service definitions
-func (m *ServiceManager) LoadServices(localServices []types.LocalServiceConfig, spectraServices []types.SpectraServiceConfig) error {
+// ============================================================================
+// Service getters/setters (with locking)
+// ============================================================================
+
+// getService returns a service definition by ID (read lock)
+func (m *ServiceManager) getService(id string) (serviceDefinition, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	def, exists := m.services[id]
+	return def, exists
+}
+
+// setService sets a service definition (write lock)
+func (m *ServiceManager) setService(id string, def serviceDefinition) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.services[id] = def
+}
 
+// getAllServices returns a copy of all services (read lock)
+func (m *ServiceManager) getAllServices() map[string]serviceDefinition {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]serviceDefinition, len(m.services))
+	for k, v := range m.services {
+		result[k] = v
+	}
+	return result
+}
+
+// findLocalService returns the first local service found (read lock)
+func (m *ServiceManager) findLocalService() (serviceDefinition, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, svc := range m.services {
+		if svc.Type == types.ServiceTypeLocal {
+			return svc, true
+		}
+	}
+	return serviceDefinition{}, false
+}
+
+// hasLocalService checks if any local service exists (read lock)
+func (m *ServiceManager) hasLocalService() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, svc := range m.services {
+		if svc.Type == types.ServiceTypeLocal {
+			return true
+		}
+	}
+	return false
+}
+
+// findSpectraServiceByWorld finds the first Spectra service with the given world (read lock)
+func (m *ServiceManager) findSpectraServiceByWorldLocked(world string) (serviceDefinition, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, svc := range m.services {
+		if svc.Type == types.ServiceTypeSpectra && svc.Spectra != nil && svc.Spectra.World == world {
+			return svc, true
+		}
+	}
+	return serviceDefinition{}, false
+}
+
+// ============================================================================
+// Connection getters/setters (with locking)
+// ============================================================================
+
+// getConnection returns a connection by ID (read lock)
+func (m *ServiceManager) getConnection(connectionID string) (*serviceConnection, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	conn, exists := m.connections[connectionID]
+	return conn, exists
+}
+
+// registerConnection registers a connection (write lock)
+func (m *ServiceManager) registerConnection(connectionID string, conn *serviceConnection) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.connections[connectionID]; exists {
+		return fmt.Errorf("connection %s already exists", connectionID)
+	}
+	m.connections[connectionID] = conn
+	return nil
+}
+
+// incrementConnectionRefCount increments the reference count for a connection (write lock)
+func (m *ServiceManager) incrementConnectionRefCount(connectionID string) (*serviceConnection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	conn, exists := m.connections[connectionID]
+	if !exists {
+		return nil, fmt.Errorf("connection %s not found", connectionID)
+	}
+	conn.refCount++
+	return conn, nil
+}
+
+// decrementConnectionRefCount decrements the reference count and returns whether it should be deleted (write lock)
+func (m *ServiceManager) decrementConnectionRefCount(connectionID string) (*serviceConnection, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	conn, exists := m.connections[connectionID]
+	if !exists {
+		return nil, false
+	}
+	conn.refCount--
+	shouldDelete := conn.refCount <= 0
+	if shouldDelete {
+		delete(m.connections, connectionID)
+	}
+	return conn, shouldDelete
+}
+
+// LoadServices loads services from the provided service definitions
+func (m *ServiceManager) LoadServices(localServices []types.LocalServiceConfig, spectraServices []types.SpectraServiceConfig) error {
 	for _, svc := range localServices {
 		if svc.ID == "" {
 			return fmt.Errorf("local service missing id")
@@ -72,7 +185,7 @@ func (m *ServiceManager) LoadServices(localServices []types.LocalServiceConfig, 
 			Local: &normalized,
 		}
 
-		m.services[def.ID] = def
+		m.setService(def.ID, def)
 	}
 
 	for _, svc := range spectraServices {
@@ -110,7 +223,7 @@ func (m *ServiceManager) LoadServices(localServices []types.LocalServiceConfig, 
 			Spectra: &normalized,
 		}
 
-		m.services[def.ID] = def
+		m.setService(def.ID, def)
 	}
 
 	return nil
@@ -118,14 +231,12 @@ func (m *ServiceManager) LoadServices(localServices []types.LocalServiceConfig, 
 
 // ListSources returns a list of all available sources
 func (m *ServiceManager) ListSources(ctx context.Context) ([]types.Source, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	sources := make([]types.Source, 0)
 	hasSpectra := false
 	var spectraConfigPath string
 
-	for _, svc := range m.services {
+	services := m.getAllServices()
+	for _, svc := range services {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -185,69 +296,68 @@ func (m *ServiceManager) ListSources(ctx context.Context) ([]types.Source, error
 }
 
 // applyPagination applies pagination to a ListResult and returns pagination metadata
-func applyPagination(result types.ListResult, offset, limit int, foldersOnly bool) (types.ListResult, types.PaginationInfo) {
-	// Normalize pagination parameters
-	if limit <= 0 {
-		limit = 100 // Default limit
-	}
-	if limit > 1000 {
-		limit = 1000 // Max limit
-	}
+func applyPagination(result types.ListResult, offset, limit int,
+	foldersOnly bool) (types.ListResult, types.PaginationInfo) {
 	if offset < 0 {
 		offset = 0
 	}
-
-	totalFolders := len(result.Folders)
-	totalFiles := len(result.Files)
-	total := totalFolders + totalFiles
-
-	// Initialize paginated result with empty slices
-	paginatedResult := types.ListResult{
-		Folders: []types.Folder{},
-		Files:   []types.File{},
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 
+	total := len(result.Folders) + len(result.Files)
+	totalFolders := len(result.Folders)
+	totalFiles := len(result.Files)
+
+	var paginatedResult types.ListResult
+
+	// Apply foldersOnly filter if requested
 	if foldersOnly {
-		// Only paginate folders
-		total = totalFolders
-		if offset < totalFolders {
-			end := offset + limit
-			if end > totalFolders {
-				end = totalFolders
-			}
-			// Explicitly slice the folders array
-			paginatedResult.Folders = result.Folders[offset:end]
-		}
-		// Don't include files when foldersOnly is true
-		paginatedResult.Files = []types.File{}
+		paginatedResult.Folders = result.Folders
+		paginatedResult.Files = []types.File{} // Empty files when foldersOnly is true
 	} else {
-		// Paginate all items (folders first, then files)
-		allItems := make([]interface{}, 0, totalFolders+totalFiles)
-		for i := range result.Folders {
-			allItems = append(allItems, &result.Folders[i])
+		paginatedResult.Folders = result.Folders
+		paginatedResult.Files = result.Files
+	}
+
+	// Apply offset and limit to folders
+	if offset < len(paginatedResult.Folders) {
+		end := offset + limit
+		if end > len(paginatedResult.Folders) {
+			end = len(paginatedResult.Folders)
 		}
-		for i := range result.Files {
-			allItems = append(allItems, &result.Files[i])
+		paginatedResult.Folders = paginatedResult.Folders[offset:end]
+	} else {
+		paginatedResult.Folders = []types.Folder{}
+	}
+
+	// If foldersOnly is false, also apply offset and limit to files
+	if !foldersOnly {
+		// Adjust file offset based on how many folders we skipped
+		fileOffset := offset
+		if fileOffset > totalFolders {
+			fileOffset = fileOffset - totalFolders
+		} else {
+			fileOffset = 0
 		}
 
-		if offset < len(allItems) {
-			end := offset + limit
-			if end > len(allItems) {
-				end = len(allItems)
-			}
+		// Adjust file limit based on how many folders we already included
+		fileLimit := limit - len(paginatedResult.Folders)
+		if fileLimit < 0 {
+			fileLimit = 0
+		}
 
-			// Separate back into folders and files
-			paginatedResult.Folders = make([]types.Folder, 0)
-			paginatedResult.Files = make([]types.File, 0)
-
-			for i := offset; i < end; i++ {
-				switch item := allItems[i].(type) {
-				case *types.Folder:
-					paginatedResult.Folders = append(paginatedResult.Folders, *item)
-				case *types.File:
-					paginatedResult.Files = append(paginatedResult.Files, *item)
-				}
+		if fileOffset < len(paginatedResult.Files) {
+			end := fileOffset + fileLimit
+			if end > len(paginatedResult.Files) {
+				end = len(paginatedResult.Files)
 			}
+			paginatedResult.Files = paginatedResult.Files[fileOffset:end]
+		} else {
+			paginatedResult.Files = []types.File{}
 		}
 	}
 
@@ -292,7 +402,11 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("spectra service with world %s not found: %w", world, err)
 		}
 
-		result, err := m.listSpectraChildren(def, req.Identifier)
+		// ListChildren for Spectra now requires a session ID
+		if req.SessionID == "" {
+			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("listing Spectra children requires a session ID")
+		}
+		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID)
 		if err != nil {
 			return types.ListResult{}, types.PaginationInfo{}, err
 		}
@@ -306,17 +420,7 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 	// Since there's only one filesystem per machine, this makes sense
 	// For "local" virtual service, allow unrestricted browsing (ignore rootPath restrictions)
 	if serviceID == "local" {
-		m.mu.RLock()
-		var localDef serviceDefinition
-		found := false
-		for _, svc := range m.services {
-			if svc.Type == types.ServiceTypeLocal {
-				localDef = svc
-				found = true
-				break
-			}
-		}
-		m.mu.RUnlock()
+		localDef, found := m.findLocalService()
 
 		if !found {
 			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("no local filesystem services configured")
@@ -353,7 +457,11 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 		return result.Result, result.Pagination, nil
 
 	case types.ServiceTypeSpectra:
-		result, err := m.listSpectraChildren(def, req.Identifier)
+		// ListChildren for Spectra now requires a session ID
+		if req.SessionID == "" {
+			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("listing Spectra children requires a session ID")
+		}
+		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID)
 		if err != nil {
 			return types.ListResult{}, types.PaginationInfo{}, err
 		}
@@ -455,25 +563,44 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 	return paginatedListResult{Result: paginated, Pagination: pagination}, nil
 }
 
-func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier string) (types.ListResult, error) {
+// listSpectraChildren lists children using a session. This function requires a session ID.
+// It does NOT create or close Spectra - it must be given a valid session.
+func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier string, sessionID string) (types.ListResult, error) {
 	if def.Spectra == nil {
 		return types.ListResult{}, fmt.Errorf("spectra service %s missing configuration", def.ID)
 	}
 
-	spectraFS, err := sdk.New(def.Spectra.ConfigPath)
-	if err != nil {
-		return types.ListResult{}, err
+	if sessionID == "" {
+		return types.ListResult{}, fmt.Errorf("listSpectraChildren requires a session ID - no session provided")
 	}
-	defer spectraFS.Close()
+
+	// Get the session from the connection pool
+	conn, exists := m.getConnection(sessionID)
+
+	if !exists {
+		return types.ListResult{}, fmt.Errorf("session %s not found - cannot list children without an active session", sessionID)
+	}
+
+	if conn.typ != types.ServiceTypeSpectra {
+		return types.ListResult{}, fmt.Errorf("session %s is not a Spectra session", sessionID)
+	}
+
+	if conn.session == nil {
+		return types.ListResult{}, fmt.Errorf("session %s has no Spectra session instance", sessionID)
+	}
+
+	if conn.session.IsClosed() {
+		return types.ListResult{}, fmt.Errorf("session %s is closed", sessionID)
+	}
 
 	root := def.Spectra.RootID
 	if root == "" {
 		root = "root"
 	}
 
-	adapter, err := NewSpectraFS(spectraFS, root, def.Spectra.World)
+	adapter, err := conn.session.CreateAdapter(root, def.Spectra.World)
 	if err != nil {
-		return types.ListResult{}, err
+		return types.ListResult{}, fmt.Errorf("failed to create adapter from session: %w", err)
 	}
 
 	target := identifier
@@ -490,29 +617,16 @@ func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier s
 func (m *ServiceManager) ListDrives(ctx context.Context, serviceID string) ([]types.DriveInfo, error) {
 	// Handle "local" as a virtual service ID (similar to "spectra")
 	// Drives are system-wide, not service-specific, so we just need to verify
-	// that local services exist
+	// that a local service exists (we don't need to use it)
 	if serviceID == "local" {
-		m.mu.RLock()
-		hasLocal := false
-		for _, svc := range m.services {
-			if svc.Type == types.ServiceTypeLocal {
-				hasLocal = true
-				break
-			}
-		}
-		m.mu.RUnlock()
-
-		if !hasLocal {
+		if !m.hasLocalService() {
 			return nil, fmt.Errorf("no local filesystem services configured")
 		}
-		// Proceed with drive listing - drives are the same regardless of which local service
 	} else {
-		def, err := m.serviceDefinition(serviceID)
+		// Verify the service exists
+		_, err := m.serviceDefinition(serviceID)
 		if err != nil {
 			return nil, err
-		}
-		if def.Type != types.ServiceTypeLocal {
-			return nil, fmt.Errorf("list drives is only supported for local filesystem services")
 		}
 	}
 
@@ -535,55 +649,31 @@ func (m *ServiceManager) ListDrives(ctx context.Context, serviceID string) ([]ty
 			driveType := "unknown"
 			_, err = os.ReadDir(drivePath)
 			if err == nil {
-				// Basic heuristic: if it's accessible, try to determine type
-				// On Windows, we could use GetDriveType API, but for now just mark as accessible
+				// Drive is accessible - could be fixed, removable, or network
+				// Windows API would be needed for precise type, but this is a reasonable approximation
 				driveType = "fixed" // Default assumption
 			}
 
 			drives = append(drives, types.DriveInfo{
-				Path:        drivePath,
-				DisplayName: string(letter),
-				Type:        driveType,
+				Path: drivePath,
+				Type: driveType,
 			})
 		}
 	} else {
-		// On Unix-like systems, list common mount points
-		// Start with root
+		// On Unix systems, just return the root directory as a single "drive"
 		drives = append(drives, types.DriveInfo{
-			Path:        "/",
-			DisplayName: "Root",
-			Type:        "filesystem",
+			Path: "/",
+			Type: "fixed",
 		})
-
-		// Try to list common mount points
-		mountPoints := []string{"/mnt", "/media", "/Volumes"}
-		for _, mountPoint := range mountPoints {
-			entries, err := os.ReadDir(mountPoint)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if entry.IsDir() {
-					fullPath := filepath.Join(mountPoint, entry.Name())
-					drives = append(drives, types.DriveInfo{
-						Path:        fullPath,
-						DisplayName: entry.Name(),
-						Type:        "mount",
-					})
-				}
-			}
-		}
 	}
 
 	return drives, nil
 }
 
+// serviceDefinition returns a service definition by ID
 func (m *ServiceManager) serviceDefinition(id string) (serviceDefinition, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	def, ok := m.services[id]
-	if !ok {
+	def, exists := m.getService(id)
+	if !exists {
 		return serviceDefinition{}, ErrServiceNotFound
 	}
 	return def, nil
@@ -591,20 +681,65 @@ func (m *ServiceManager) serviceDefinition(id string) (serviceDefinition, error)
 
 // findSpectraServiceByWorld finds the first Spectra service with the given world.
 func (m *ServiceManager) findSpectraServiceByWorld(world string) (serviceDefinition, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, svc := range m.services {
-		if svc.Type == types.ServiceTypeSpectra && svc.Spectra != nil && svc.Spectra.World == world {
-			return svc, nil
-		}
+	def, exists := m.findSpectraServiceByWorldLocked(world)
+	if !exists {
+		return serviceDefinition{}, ErrServiceNotFound
 	}
-	return serviceDefinition{}, ErrServiceNotFound
+	return def, nil
 }
 
 // GetServiceDefinitionByWorld finds the first Spectra service with the given world.
 func (m *ServiceManager) GetServiceDefinitionByWorld(world string) (types.ServiceDefinition, error) {
 	return m.findSpectraServiceByWorld(world)
+}
+
+// RegisterSpectraSession creates a new Spectra session and registers it with the ServiceManager.
+// The ServiceManager owns the session lifecycle - the API should not hold a reference to it.
+// Returns a sessionID that can be used to acquire adapters from this session.
+// If connectionID is empty, a unique ID will be generated.
+func (m *ServiceManager) RegisterSpectraSession(configPath string, connectionID string) (string, error) {
+	if configPath == "" {
+		return "", fmt.Errorf("configPath cannot be empty")
+	}
+
+	// Generate connectionID if not provided
+	if connectionID == "" {
+		// Generate a unique ID (simple approach)
+		m.mu.RLock()
+		baseID := len(m.connections)
+		m.mu.RUnlock()
+
+		connectionID = fmt.Sprintf("spectra-%d", baseID)
+		// Ensure uniqueness
+		for {
+			if _, exists := m.getConnection(connectionID); !exists {
+				break
+			}
+			baseID++
+			connectionID = fmt.Sprintf("spectra-%d", baseID)
+		}
+	}
+
+	// Create the session (this calls sdk.New() internally)
+	session, err := NewSpectraSession(configPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create Spectra session: %w", err)
+	}
+
+	// Register the connection
+	conn := &serviceConnection{
+		typ:      types.ServiceTypeSpectra,
+		session:  session,
+		refCount: 0, // Will be incremented when adapters are acquired
+	}
+
+	if err := m.registerConnection(connectionID, conn); err != nil {
+		// Registration failed - close the session we created
+		_ = session.Close()
+		return "", err
+	}
+
+	return connectionID, nil
 }
 
 // AcquireAdapter acquires an adapter for the given service definition
@@ -632,102 +767,55 @@ func (m *ServiceManager) AcquireAdapterWithOverride(def serviceDefinition, rootI
 			return nil, nil, fmt.Errorf("spectra configuration missing")
 		}
 
-		return m.acquireSpectraAdapter(def, rootID, connectionID, spectraConfigOverridePath)
+		return m.acquireSpectraAdapter(def, rootID, connectionID)
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported service type: %s", def.Type)
 	}
 }
 
-func (m *ServiceManager) acquireSpectraAdapter(def serviceDefinition, rootID, connectionID, spectraConfigOverridePath string) (types.FSAdapter, func(), error) {
+func (m *ServiceManager) acquireSpectraAdapter(def serviceDefinition, rootID, connectionID string) (types.FSAdapter, func(), error) {
 	root := def.Spectra.RootID
 	if rootID != "" {
 		root = rootID
 	}
 
-	// Use override config path if provided, otherwise use original
-	configPath := def.Spectra.ConfigPath
-	if spectraConfigOverridePath != "" {
-		configPath = spectraConfigOverridePath
-	}
-
+	// connectionID is required for Spectra - session must be registered first
 	if connectionID == "" {
-		spectraFS, err := sdk.New(configPath)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		adapter, err := NewSpectraFS(spectraFS, root, def.Spectra.World)
-		if err != nil {
-			_ = spectraFS.Close()
-			return nil, nil, err
-		}
-
-		return adapter, func() {
-			_ = spectraFS.Close()
-		}, nil
+		return nil, nil, fmt.Errorf("connectionID is required for Spectra services - session must be registered first using RegisterSpectraSession")
 	}
 
-	m.mu.Lock()
-	conn, ok := m.connections[connectionID]
-	if ok {
-		if conn.typ != types.ServiceTypeSpectra {
-			m.mu.Unlock()
-			return nil, nil, fmt.Errorf("connection %s is already in use by a different service type", connectionID)
-		}
-
-		conn.refCount++
-		spectraFS := conn.spectra
-		m.mu.Unlock()
-
-		adapter, err := NewSpectraFS(spectraFS, root, def.Spectra.World)
-		if err != nil {
-			m.ReleaseConnection(connectionID)
-			return nil, nil, err
-		}
-
-		return adapter, func() {
-			m.ReleaseConnection(connectionID)
-		}, nil
+	// Get existing connection (session must be registered by caller)
+	conn, exists := m.getConnection(connectionID)
+	if !exists {
+		return nil, nil, fmt.Errorf("connection %s not found - session must be registered first using RegisterSpectraSession", connectionID)
 	}
-	m.mu.Unlock()
 
-	spectraFS, err := sdk.New(configPath)
+	// Validate connection type
+	if conn.typ != types.ServiceTypeSpectra {
+		return nil, nil, fmt.Errorf("connection %s is not a Spectra connection", connectionID)
+	}
+
+	if conn.session == nil {
+		return nil, nil, fmt.Errorf("connection %s has no session", connectionID)
+	}
+
+	if conn.session.IsClosed() {
+		return nil, nil, fmt.Errorf("connection %s session is closed", connectionID)
+	}
+
+	// Increment ref count
+	_, err := m.incrementConnectionRefCount(connectionID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	adapter, err := NewSpectraFS(spectraFS, root, def.Spectra.World)
+	// Create adapter from the registered session
+	adapter, err := conn.session.CreateAdapter(root, def.Spectra.World)
 	if err != nil {
-		_ = spectraFS.Close()
-		return nil, nil, err
+		m.ReleaseConnection(connectionID)
+		return nil, nil, fmt.Errorf("failed to create adapter from session: %w", err)
 	}
-
-	m.mu.Lock()
-	if existing, exists := m.connections[connectionID]; exists {
-		existing.refCount++
-		spectraShared := existing.spectra
-		m.mu.Unlock()
-
-		_ = spectraFS.Close()
-
-		adapter, err := NewSpectraFS(spectraShared, root, def.Spectra.World)
-		if err != nil {
-			m.ReleaseConnection(connectionID)
-			return nil, nil, err
-		}
-
-		return adapter, func() {
-			m.ReleaseConnection(connectionID)
-		}, nil
-	}
-
-	m.connections[connectionID] = &serviceConnection{
-		typ:      types.ServiceTypeSpectra,
-		spectra:  spectraFS,
-		refCount: 1,
-	}
-	m.mu.Unlock()
 
 	return adapter, func() {
 		m.ReleaseConnection(connectionID)
@@ -740,24 +828,20 @@ func (m *ServiceManager) ReleaseConnection(connectionID string) {
 		return
 	}
 
-	m.mu.Lock()
-	conn, ok := m.connections[connectionID]
-	if !ok {
-		m.mu.Unlock()
+	conn, shouldDelete := m.decrementConnectionRefCount(connectionID)
+	if !shouldDelete {
 		return
 	}
 
-	conn.refCount--
-	if conn.refCount <= 0 {
-		delete(m.connections, connectionID)
+	// Connection should be deleted - close it if it's a Spectra session
+	if conn != nil {
 		switch conn.typ {
 		case types.ServiceTypeSpectra:
-			if conn.spectra != nil {
-				_ = conn.spectra.Close()
+			if conn.session != nil {
+				_ = conn.session.Close() // Close the session
 			}
 		}
 	}
-	m.mu.Unlock()
 }
 
 // GetServiceDefinition returns a service definition by ID

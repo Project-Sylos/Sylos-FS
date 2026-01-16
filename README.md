@@ -30,6 +30,9 @@ pkg/
 
 ```go
 import (
+    "context"
+    "io"
+    "strings"
     "github.com/Project-Sylos/Sylos-FS/pkg/fs"
     "github.com/Project-Sylos/Sylos-FS/pkg/types"
 )
@@ -92,8 +95,9 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Download a file
-reader, err := localFS.DownloadFile("/path/to/file.txt")
+// Open a file for reading
+ctx := context.Background()
+reader, err := localFS.OpenRead(ctx, "/path/to/file.txt")
 if err != nil {
     log.Fatal(err)
 }
@@ -105,10 +109,28 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Upload a file
-fileContent := strings.NewReader("file content")
-file, err := localFS.UploadFile("/path/to/destination/file.txt", fileContent)
+// Create a file with metadata, then write to it
+file, err := localFS.CreateFile(ctx, "/path/to/parent", "new-file.txt", 0, nil)
 if err != nil {
+    log.Fatal(err)
+}
+
+// Open the file for writing
+writer, err := localFS.OpenWrite(ctx, file.ServiceID)
+if err != nil {
+    log.Fatal(err)
+}
+defer writer.Close()
+
+// Worker copies data (e.g., from another reader)
+fileContent := strings.NewReader("file content")
+_, err = io.Copy(writer, fileContent)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Close commits the write
+if err := writer.Close(); err != nil {
     log.Fatal(err)
 }
 ```
