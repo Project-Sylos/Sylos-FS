@@ -33,8 +33,8 @@ import (
     "context"
     "io"
     "strings"
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
-    "github.com/Project-Sylos/Sylos-FS/pkg/types"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // Create a service manager
@@ -221,7 +221,7 @@ Common errors:
 
 ## Dependencies
 
-- `github.com/Project-Sylos/Spectra/sdk` - Spectra filesystem SDK
+- `codeberg.org/Sylos/Spectra/sdk` - Spectra filesystem SDK
 
 ## License
 

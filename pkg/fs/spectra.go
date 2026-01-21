@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Project-Sylos/Spectra/sdk"
-	"github.com/Project-Sylos/Sylos-FS/pkg/types"
+	"codeberg.org/Sylos/Spectra/sdk"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // SpectraFS implements FSAdapter for Spectra filesystem simulator.

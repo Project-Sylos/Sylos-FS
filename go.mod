@@ -1,13 +1,13 @@
-module github.com/Project-Sylos/Sylos-FS
+module codeberg.org/Sylos/Sylos-FS
 
-go 1.24.2
+go 1.25.6
 
-require github.com/Project-Sylos/Spectra v0.2.55
+require codeberg.org/Sylos/Spectra v0.2.55
 
 require (
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/oklog/ulid/v2 v2.1.0 // indirect
 	go.etcd.io/bbolt v1.3.10 // indirect
 	golang.org/x/sys v0.4.0 // indirect
 )
 
-replace github.com/Project-Sylos/Spectra => ../Spectra
+replace codeberg.org/Sylos/Spectra => ../Spectra

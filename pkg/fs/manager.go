@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Project-Sylos/Sylos-FS/pkg/types"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 var ErrServiceNotFound = fmt.Errorf("service not found")

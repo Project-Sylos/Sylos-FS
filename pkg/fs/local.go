@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Project-Sylos/Sylos-FS/pkg/types"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // LocalFS implements FSAdapter for the local filesystem.

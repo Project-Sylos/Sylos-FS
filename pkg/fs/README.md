@@ -34,8 +34,8 @@ import (
     "io"
     "log"
     "strings"
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
-    "github.com/Project-Sylos/Sylos-FS/pkg/types"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // Create a local filesystem adapter rooted at /home/user
@@ -136,8 +136,8 @@ import (
     "fmt"
     "io"
     "log"
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
-    "github.com/Project-Sylos/Spectra/sdk"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Spectra/sdk"
 )
 
 // Create a Spectra SDK instance
@@ -236,7 +236,7 @@ import (
     "io"
     "log"
 
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
 )
 
 ctx := context.Background()
@@ -299,8 +299,8 @@ The `ServiceManager` provides centralized management of multiple filesystem serv
 ```go
 import (
     "context"
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
-    "github.com/Project-Sylos/Sylos-FS/pkg/types"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // Create a service manager
@@ -558,7 +558,7 @@ The `fs` package provides a helper function for getting optimized copy buffers:
 ```go
 import (
     "io"
-    "github.com/Project-Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
 )
 
 // Use default 8MB buffer
@@ -587,5 +587,5 @@ _, err := io.CopyBuffer(dstWriter, srcReader, buffer)
 ## See Also
 
 - `pkg/types` - Shared types and interfaces
-- `github.com/Project-Sylos/Spectra/sdk` - Spectra filesystem SDK documentation
+- `codeberg.org/Sylos/Spectra/sdk` - Spectra filesystem SDK documentation
 

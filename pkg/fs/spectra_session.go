@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Project-Sylos/Spectra/sdk"
+	"codeberg.org/Sylos/Spectra/sdk"
 )
 
 // SpectraSession manages a single Spectra SDK instance and provides adapters for it.
