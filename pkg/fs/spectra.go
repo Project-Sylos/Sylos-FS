@@ -19,15 +19,16 @@ import (
 
 // SpectraFS implements FSAdapter for Spectra filesystem simulator.
 type SpectraFS struct {
-	fs     *sdk.SpectraFS
-	rootID string // The root node ID (now always "root" in single-table design)
-	world  string // The world name ("primary", "s1", "s2", etc.) for filtering queries
+	fs          *sdk.SpectraFS
+	rootID      string // The root node ID (now always "root" in single-table design)
+	world       string // The world name ("primary", "s1", "s2", etc.) for filtering queries
+	isEphemeral bool   // true if in ephemeral mode, false for persistent mode
 }
 
 // newSpectraFS creates a SpectraFS adapter from a session-owned SDK instance.
 // The adapter does not own the lifecycle of the SDK instance - the session does.
 // This function does NOT validate the root node - it assumes the session is valid.
-func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string) (*SpectraFS, error) {
+func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphemeral bool) (*SpectraFS, error) {
 	if spectraFS == nil {
 		return nil, fmt.Errorf("spectra filesystem instance cannot be nil")
 	}
@@ -42,9 +43,10 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string) (*Spect
 	// 3. This matches the Migration-Engine pattern of creating adapters without validation
 
 	return &SpectraFS{
-		fs:     spectraFS,
-		rootID: rootID,
-		world:  world,
+		fs:          spectraFS,
+		rootID:      rootID,
+		world:       world,
+		isEphemeral: isEphemeral,
 	}, nil
 }
 
@@ -53,8 +55,16 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string) (*Spect
 // For consistency with other services and future-proofing against backend pagination,
 // callers that want to process children in fixed-size pages should wrap this with
 // NewListPager(result, pageSize).
-func (s *SpectraFS) ListChildren(identifier string) (types.ListResult, error) {
+// For ephemeral mode, depth must be provided. For persistent mode, depth is optional.
+func (s *SpectraFS) ListChildren(identifier string, depth *int) (types.ListResult, error) {
 	var result types.ListResult
+
+	// For ephemeral mode, depth is required
+	if s.isEphemeral {
+		if depth == nil {
+			return result, fmt.Errorf("depth parameter is required for ephemeral mode")
+		}
+	}
 
 	// Get the node to verify it exists and is a folder using request struct
 	parentNode, err := s.fs.GetNode(&sdk.GetNodeRequest{
@@ -68,11 +78,27 @@ func (s *SpectraFS) ListChildren(identifier string) (types.ListResult, error) {
 		return result, fmt.Errorf("node %s is not a folder", identifier)
 	}
 
-	// List children from Spectra using request struct with world filter
-	listResult, err := s.fs.ListChildren(&sdk.ListChildrenRequest{
+	// Build ListChildrenRequest
+	req := &sdk.ListChildrenRequest{
 		ParentID:  identifier,
 		TableName: s.world, // Filter by world (e.g., "primary", "s1")
-	})
+	}
+
+	// For ephemeral mode, path and depth are required (EphemeralFS determinism contract)
+	if s.isEphemeral {
+		req.Depth = depth
+		// ParentPath is required in ephemeral mode; use the parent node's path from GetNode
+		req.ParentPath = types.NormalizeLocationPath(parentNode.Path)
+		if req.ParentPath == "" {
+			req.ParentPath = "/"
+		}
+	} else if depth != nil {
+		// Allow depth to be passed even in persistent mode (it will be ignored by SDK)
+		req.Depth = depth
+	}
+
+	// List children from Spectra using request struct with world filter
+	listResult, err := s.fs.ListChildren(req)
 	if err != nil {
 		return result, err
 	}
@@ -111,8 +137,8 @@ func (s *SpectraFS) ListChildren(identifier string) (types.ListResult, error) {
 // NewChildrenPager is a convenience wrapper that returns a ListPager over the
 // children of a Spectra node. It mirrors the SDK-style pagination model used
 // by many cloud services while keeping the FSAdapter interface simple.
-func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int) (*types.ListPager, error) {
-	result, err := s.ListChildren(identifier)
+func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int, depth *int) (*types.ListPager, error) {
+	result, err := s.ListChildren(identifier, depth)
 	if err != nil {
 		return nil, err
 	}

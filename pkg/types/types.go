@@ -165,7 +165,7 @@ func (p *ListPager) Next() (page ListPage, hasPage bool) {
 
 // FSAdapter is the interface that all filesystem adapters must implement
 type FSAdapter interface {
-	ListChildren(identifier string) (ListResult, error)
+	ListChildren(identifier string, depth *int) (ListResult, error)
 	OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error)
 	CreateFolder(parentId, name string) (Folder, error)
 	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
@@ -233,6 +233,7 @@ type ListChildrenRequest struct {
 	Offset      int    // Pagination offset (default: 0)
 	Limit       int    // Pagination limit (default: 100, max: 1000)
 	FoldersOnly bool   // If true, only return folders and apply limit to folders only
+	Depth       *int   // Depth level to list children at (required for ephemeral mode, optional for persistent mode)
 }
 
 // PaginationInfo provides pagination metadata

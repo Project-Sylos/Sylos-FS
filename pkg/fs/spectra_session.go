@@ -4,7 +4,9 @@
 package fs
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"codeberg.org/Sylos/Spectra/sdk"
@@ -17,21 +19,51 @@ type SpectraSession struct {
 	spectraFS  *sdk.SpectraFS
 	configPath string
 	closed     bool
+	isEphemeral bool // true if mode is "ephemeral", false for "persistent" (default)
+}
+
+// spectraConfig represents the minimal config structure needed to read the mode
+type spectraConfig struct {
+	Mode string `json:"mode"`
 }
 
 // NewSpectraSession creates a new Spectra session by calling sdk.New().
 // This is the ONLY place in the codebase where sdk.New() should be called.
 func NewSpectraSession(configPath string) (*SpectraSession, error) {
+	// Read config to determine mode
+	isEphemeral, err := readSpectraMode(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Spectra config mode: %w", err)
+	}
+
 	spectraFS, err := sdk.New(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Spectra session: %w", err)
 	}
 
 	return &SpectraSession{
-		spectraFS:  spectraFS,
-		configPath: configPath,
-		closed:     false,
+		spectraFS:    spectraFS,
+		configPath:   configPath,
+		closed:       false,
+		isEphemeral:  isEphemeral,
 	}, nil
+}
+
+// readSpectraMode reads the config file and returns true if mode is "ephemeral", false otherwise.
+// Defaults to false (persistent mode) if mode is not specified or invalid.
+func readSpectraMode(configPath string) (bool, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var config spectraConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Default to persistent mode if not specified
+	return config.Mode == "ephemeral", nil
 }
 
 // Close closes the Spectra SDK instance. Safe to call multiple times.
@@ -68,6 +100,7 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 	s.mu.RLock()
 	closed := s.closed
 	spectraFS := s.spectraFS
+	isEphemeral := s.isEphemeral
 	s.mu.RUnlock()
 
 	if closed {
@@ -80,7 +113,7 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 
 	// Create adapter using the session's SpectraFS instance
 	// Note: We don't validate the root node here - validation happens on first use
-	adapter, err := NewSpectraFS(spectraFS, rootID, world)
+	adapter, err := NewSpectraFS(spectraFS, rootID, world, isEphemeral)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adapter: %w", err)
 	}
@@ -91,4 +124,11 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 // GetConfigPath returns the config path used to create this session.
 func (s *SpectraSession) GetConfigPath() string {
 	return s.configPath
+}
+
+// IsEphemeral returns whether this session is in ephemeral mode.
+func (s *SpectraSession) IsEphemeral() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isEphemeral
 }

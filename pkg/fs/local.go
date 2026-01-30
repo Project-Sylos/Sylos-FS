@@ -41,7 +41,8 @@ func (l *LocalFS) relativize(nodeName string, parentRelPath string) string {
 }
 
 // ListChildren lists immediate children of the given node identifier (absolute path).
-func (l *LocalFS) ListChildren(identifier string) (types.ListResult, error) {
+// The depth parameter is ignored for local filesystems.
+func (l *LocalFS) ListChildren(identifier string, depth *int) (types.ListResult, error) {
 	var result types.ListResult
 
 	// Get parent's relative path by stripping root
