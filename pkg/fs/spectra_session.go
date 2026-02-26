@@ -15,11 +15,11 @@ import (
 // SpectraSession manages a single Spectra SDK instance and provides adapters for it.
 // This is the ONLY place where sdk.New() is allowed to be called.
 type SpectraSession struct {
-	mu         sync.RWMutex
-	spectraFS  *sdk.SpectraFS
-	configPath string
-	closed     bool
-	isEphemeral bool // true if mode is "ephemeral", false for "persistent" (default)
+	mu          sync.RWMutex
+	spectraFS   *sdk.SpectraFS
+	configPath  string
+	closed      bool
+	isEphemeral bool
 }
 
 // spectraConfig represents the minimal config structure needed to read the mode
@@ -42,10 +42,10 @@ func NewSpectraSession(configPath string) (*SpectraSession, error) {
 	}
 
 	return &SpectraSession{
-		spectraFS:    spectraFS,
-		configPath:   configPath,
-		closed:       false,
-		isEphemeral:  isEphemeral,
+		spectraFS:   spectraFS,
+		configPath:  configPath,
+		closed:      false,
+		isEphemeral: isEphemeral,
 	}, nil
 }
 

@@ -55,18 +55,38 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphem
 // For consistency with other services and future-proofing against backend pagination,
 // callers that want to process children in fixed-size pages should wrap this with
 // NewListPager(result, pageSize).
-// For ephemeral mode, depth must be provided. For persistent mode, depth is optional.
-func (s *SpectraFS) ListChildren(identifier string, depth *int) (types.ListResult, error) {
+// For ephemeral mode, depth and parentPath must be provided by the caller (no persisted node to read from).
+// For persistent mode, depth and parentPath are optional.
+func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath string) (types.ListResult, error) {
 	var result types.ListResult
 
-	// For ephemeral mode, depth is required
+	// For ephemeral mode, depth and parentPath are required (caller must supply; nothing persisted)
 	if s.isEphemeral {
 		if depth == nil {
 			return result, fmt.Errorf("depth parameter is required for ephemeral mode")
 		}
+		if parentPath == "" {
+			return result, fmt.Errorf("path is required in ephemeral mode (use parent_path)")
+		}
+		// Build request from caller-supplied path and depth; no GetNode in ephemeral mode
+		pathStr := types.NormalizeLocationPath(parentPath)
+		if pathStr == "" {
+			pathStr = "/"
+		}
+		req := &sdk.ListChildrenRequest{
+			ParentID:   identifier,
+			ParentPath: pathStr,
+			TableName:  s.world,
+			Depth:      depth,
+		}
+		listResult, err := s.fs.ListChildren(req)
+		if err != nil {
+			return result, err
+		}
+		return s.convertListResult(listResult, identifier), nil
 	}
 
-	// Get the node to verify it exists and is a folder using request struct
+	// Persistent mode: optional depth, no parentPath needed; validate node via GetNode
 	parentNode, err := s.fs.GetNode(&sdk.GetNodeRequest{
 		ID: identifier,
 	})
@@ -78,32 +98,25 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int) (types.ListResul
 		return result, fmt.Errorf("node %s is not a folder", identifier)
 	}
 
-	// Build ListChildrenRequest
 	req := &sdk.ListChildrenRequest{
 		ParentID:  identifier,
-		TableName: s.world, // Filter by world (e.g., "primary", "s1")
+		TableName: s.world,
 	}
-
-	// For ephemeral mode, path and depth are required (EphemeralFS determinism contract)
-	if s.isEphemeral {
-		req.Depth = depth
-		// ParentPath is required in ephemeral mode; use the parent node's path from GetNode
-		req.ParentPath = types.NormalizeLocationPath(parentNode.Path)
-		if req.ParentPath == "" {
-			req.ParentPath = "/"
-		}
-	} else if depth != nil {
-		// Allow depth to be passed even in persistent mode (it will be ignored by SDK)
+	if depth != nil {
 		req.Depth = depth
 	}
 
-	// List children from Spectra using request struct with world filter
 	listResult, err := s.fs.ListChildren(req)
 	if err != nil {
 		return result, err
 	}
 
-	// Convert Spectra nodes to our internal format
+	return s.convertListResult(listResult, identifier), nil
+}
+
+// convertListResult maps Spectra list response to types.ListResult.
+func (s *SpectraFS) convertListResult(listResult *sdk.ListResult, identifier string) types.ListResult {
+	var result types.ListResult
 	for _, node := range listResult.Folders {
 		result.Folders = append(result.Folders, types.Folder{
 			ServiceID:    node.ID,
@@ -116,12 +129,11 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int) (types.ListResul
 			Type:         types.NodeTypeFolder,
 		})
 	}
-
 	for _, node := range listResult.Files {
 		result.Files = append(result.Files, types.File{
 			ServiceID:    node.ID,
 			ParentId:     identifier,
-			ParentPath:   types.NormalizeParentPath(node.ParentPath), // parent's relative path
+			ParentPath:   types.NormalizeParentPath(node.ParentPath),
 			DisplayName:  node.Name,
 			LocationPath: types.NormalizeLocationPath(node.Path),
 			LastUpdated:  node.LastUpdated.Format(time.RFC3339),
@@ -130,15 +142,14 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int) (types.ListResul
 			Type:         types.NodeTypeFile,
 		})
 	}
-
-	return result, nil
+	return result
 }
 
 // NewChildrenPager is a convenience wrapper that returns a ListPager over the
 // children of a Spectra node. It mirrors the SDK-style pagination model used
 // by many cloud services while keeping the FSAdapter interface simple.
-func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int, depth *int) (*types.ListPager, error) {
-	result, err := s.ListChildren(identifier, depth)
+func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int, depth *int, parentPath string) (*types.ListPager, error) {
+	result, err := s.ListChildren(identifier, depth, parentPath)
 	if err != nil {
 		return nil, err
 	}

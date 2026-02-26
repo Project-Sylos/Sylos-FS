@@ -406,7 +406,7 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 		if req.SessionID == "" {
 			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("listing Spectra children requires a session ID")
 		}
-		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID, req.Depth)
+		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID, req.Depth, req.ParentPath)
 		if err != nil {
 			return types.ListResult{}, types.PaginationInfo{}, err
 		}
@@ -461,7 +461,7 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 		if req.SessionID == "" {
 			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("listing Spectra children requires a session ID")
 		}
-		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID, req.Depth)
+		result, err := m.listSpectraChildren(def, req.Identifier, req.SessionID, req.Depth, req.ParentPath)
 		if err != nil {
 			return types.ListResult{}, types.PaginationInfo{}, err
 		}
@@ -522,7 +522,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 			return paginatedListResult{}, err
 		}
 
-		result, err := adapter.ListChildren(cleanTarget, nil)
+		result, err := adapter.ListChildren(cleanTarget, nil, "")
 		if err != nil {
 			return paginatedListResult{}, err
 		}
@@ -553,7 +553,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 		return paginatedListResult{}, fmt.Errorf("path %s is outside allowed root %s", cleanTarget, root)
 	}
 
-	result, err := adapter.ListChildren(cleanTarget, nil)
+	result, err := adapter.ListChildren(cleanTarget, nil, "")
 	if err != nil {
 		return paginatedListResult{}, err
 	}
@@ -565,7 +565,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 
 // listSpectraChildren lists children using a session. This function requires a session ID.
 // It does NOT create or close Spectra - it must be given a valid session.
-func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier string, sessionID string, depth *int) (types.ListResult, error) {
+func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier string, sessionID string, depth *int, parentPath string) (types.ListResult, error) {
 	if def.Spectra == nil {
 		return types.ListResult{}, fmt.Errorf("spectra service %s missing configuration", def.ID)
 	}
@@ -593,10 +593,13 @@ func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier s
 		return types.ListResult{}, fmt.Errorf("session %s is closed", sessionID)
 	}
 
-	// Validate depth for ephemeral mode
+	// Validate depth and parentPath for ephemeral mode (caller must supply both)
 	if conn.session.IsEphemeral() {
 		if depth == nil {
 			return types.ListResult{}, fmt.Errorf("depth parameter is required for ephemeral mode")
+		}
+		if parentPath == "" {
+			return types.ListResult{}, fmt.Errorf("path is required in ephemeral mode (use parent_path)")
 		}
 	}
 
@@ -615,7 +618,7 @@ func (m *ServiceManager) listSpectraChildren(def serviceDefinition, identifier s
 		target = root
 	}
 
-	return adapter.ListChildren(target, depth)
+	return adapter.ListChildren(target, depth, parentPath)
 }
 
 // ListDrives lists available drives/volumes on the system

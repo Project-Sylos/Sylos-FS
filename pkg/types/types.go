@@ -165,7 +165,7 @@ func (p *ListPager) Next() (page ListPage, hasPage bool) {
 
 // FSAdapter is the interface that all filesystem adapters must implement
 type FSAdapter interface {
-	ListChildren(identifier string, depth *int) (ListResult, error)
+	ListChildren(identifier string, depth *int, parentPath string) (ListResult, error)
 	OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error)
 	CreateFolder(parentId, name string) (Folder, error)
 	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
@@ -234,6 +234,7 @@ type ListChildrenRequest struct {
 	Limit       int    // Pagination limit (default: 100, max: 1000)
 	FoldersOnly bool   // If true, only return folders and apply limit to folders only
 	Depth       *int   // Depth level to list children at (required for ephemeral mode, optional for persistent mode)
+	ParentPath  string // Parent path (required for Spectra ephemeral mode; caller must supply, e.g. "/" for root)
 }
 
 // PaginationInfo provides pagination metadata
@@ -260,6 +261,15 @@ type LocalServiceConfig struct {
 	RootPath string // Empty means unrestricted browsing
 }
 
+// SpectraSessionOptions are optional overrides when creating a Spectra session.
+// Nil values mean use the config file as-is.
+type SpectraSessionOptions struct {
+	// DivergingTreeMode (ephemeral only): if non-nil, overrides seed.diverging_tree_mode in config.
+	// When true, each world gets a different tree shape (e.g. for copy tests).
+	// When false or nil (default), same path in any world yields same children.
+	DivergingTreeMode *bool
+}
+
 // SpectraServiceConfig represents configuration for a Spectra filesystem service
 type SpectraServiceConfig struct {
 	ID         string
@@ -267,6 +277,8 @@ type SpectraServiceConfig struct {
 	World      string // "primary", "s1", "s2", etc.
 	RootID     string // Typically "root"
 	ConfigPath string // Path to Spectra config file
+	// DivergingTreeMode: if non-nil, use when creating a session for this service (ephemeral only).
+	DivergingTreeMode *bool
 }
 
 // ServiceDefinition represents a service definition
