@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/local"
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/spectra"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
@@ -29,7 +31,7 @@ type serviceDefinition = types.ServiceDefinition // alias for internal use
 
 type serviceConnection struct {
 	typ      types.ServiceType
-	session  *SpectraSession // For Spectra services, use session instead of raw SDK
+	session  *spectra.SpectraSession // For Spectra services, use session instead of raw SDK
 	refCount int
 }
 
@@ -480,7 +482,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 	}
 
 	root := def.Local.RootPath
-	var adapter *LocalFS
+	var adapter types.FSAdapter
 	var err error
 
 	// If rootPath is empty, allow unrestricted browsing
@@ -517,7 +519,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 			adapterRoot = "/"
 		}
 
-		adapter, err = NewLocalFS(adapterRoot)
+		adapter, err = local.NewLocalFS(adapterRoot)
 		if err != nil {
 			return paginatedListResult{}, err
 		}
@@ -533,7 +535,7 @@ func (m *ServiceManager) listLocalChildren(def serviceDefinition, identifier str
 	}
 
 	// Restricted browsing within rootPath
-	adapter, err = NewLocalFS(root)
+	adapter, err = local.NewLocalFS(root)
 	if err != nil {
 		return paginatedListResult{}, err
 	}
@@ -731,7 +733,7 @@ func (m *ServiceManager) RegisterSpectraSession(configPath string, connectionID 
 	}
 
 	// Create the session (this calls sdk.New() internally)
-	session, err := NewSpectraSession(configPath)
+	session, err := spectra.NewSpectraSession(configPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to create Spectra session: %w", err)
 	}
@@ -765,7 +767,7 @@ func (m *ServiceManager) AcquireAdapterWithOverride(def serviceDefinition, rootI
 			return nil, nil, fmt.Errorf("local root path cannot be empty")
 		}
 
-		adapter, err := NewLocalFS(rootID)
+		adapter, err := local.NewLocalFS(rootID)
 		if err != nil {
 			return nil, nil, err
 		}

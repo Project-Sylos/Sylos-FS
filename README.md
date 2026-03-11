@@ -16,12 +16,14 @@ Sylos-FS abstracts filesystem operations behind a common `FSAdapter` interface, 
 
 ```
 pkg/
-├── types/          # Shared types, interfaces, and utilities
-│   └── types.go    # Core types (Folder, File, FSAdapter, etc.)
-└── fs/             # Filesystem adapters and service manager
-    ├── local.go    # Local filesystem adapter
-    ├── spectra.go  # Spectra filesystem adapter
-    └── manager.go # Service manager for coordinating services
+├── types/              # Shared types, interfaces, and utilities
+│   └── types.go        # Core types (Folder, File, FSAdapter, etc.)
+└── fs/                 # Service manager (package fs)
+    ├── manager.go      # ServiceManager, connection pooling
+    ├── copy_buffer.go  # GetCopyBuffer for io.CopyBuffer
+    ├── ctxstream/      # Context-aware Read/Write wrappers
+    ├── local/          # LocalFS adapter + Lstat safety
+    └── spectra/        # SpectraSession + SpectraFS adapter
 ```
 
 ## Quick Start
@@ -83,8 +85,10 @@ result, pagination, err := manager.ListChildren(context.Background(), types.List
 ### Direct Adapter Usage
 
 ```go
+import "codeberg.org/Sylos/Sylos-FS/pkg/fs/local"
+
 // Create a local filesystem adapter
-localFS, err := fs.NewLocalFS("/path/to/root")
+localFS, err := local.NewLocalFS("/path/to/root")
 if err != nil {
     log.Fatal(err)
 }

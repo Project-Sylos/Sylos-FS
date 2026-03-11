@@ -1,7 +1,8 @@
 // Copyright 2025 Sylos contributors
 // SPDX-License-Identifier: MIT License
 
-package fs
+// Package spectra implements FSAdapter for the Spectra filesystem simulator.
+package spectra
 
 import (
 	"encoding/json"
@@ -22,15 +23,12 @@ type SpectraSession struct {
 	isEphemeral bool
 }
 
-// spectraConfig represents the minimal config structure needed to read the mode
 type spectraConfig struct {
 	Mode string `json:"mode"`
 }
 
 // NewSpectraSession creates a new Spectra session by calling sdk.New().
-// This is the ONLY place in the codebase where sdk.New() should be called.
 func NewSpectraSession(configPath string) (*SpectraSession, error) {
-	// Read config to determine mode
 	isEphemeral, err := readSpectraMode(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Spectra config mode: %w", err)
@@ -49,8 +47,6 @@ func NewSpectraSession(configPath string) (*SpectraSession, error) {
 	}, nil
 }
 
-// readSpectraMode reads the config file and returns true if mode is "ephemeral", false otherwise.
-// Defaults to false (persistent mode) if mode is not specified or invalid.
 func readSpectraMode(configPath string) (bool, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -62,22 +58,21 @@ func readSpectraMode(configPath string) (bool, error) {
 		return false, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Default to persistent mode if not specified
 	return config.Mode == "ephemeral", nil
 }
 
-// Close closes the Spectra SDK instance. Safe to call multiple times.
+// Close closes the Spectra SDK instance.
 func (s *SpectraSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return nil // Already closed, safe to ignore
+		return nil
 	}
 
 	if s.spectraFS != nil {
 		if err := s.spectraFS.Close(); err != nil {
-			s.closed = true // Mark as closed even on error
+			s.closed = true
 			return fmt.Errorf("failed to close Spectra session: %w", err)
 		}
 	}
@@ -94,8 +89,6 @@ func (s *SpectraSession) IsClosed() bool {
 }
 
 // CreateAdapter creates a SpectraFS adapter for the given rootID and world.
-// The adapter does not own the lifecycle of the SDK instance.
-// Returns an error immediately if the session is closed (fail fast).
 func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error) {
 	s.mu.RLock()
 	closed := s.closed
@@ -111,8 +104,6 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 		return nil, fmt.Errorf("cannot create adapter: session has no SpectraFS instance")
 	}
 
-	// Create adapter using the session's SpectraFS instance
-	// Note: We don't validate the root node here - validation happens on first use
 	adapter, err := NewSpectraFS(spectraFS, rootID, world, isEphemeral)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adapter: %w", err)

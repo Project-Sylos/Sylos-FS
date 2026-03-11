@@ -1,22 +1,36 @@
 // Copyright 2025 Sylos contributors
 // SPDX-License-Identifier: MIT License
 
-package fs
+// Package local implements FSAdapter for the local filesystem with Lstat-first safety.
+package local
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/ctxstream"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
-// LocalFS implements FSAdapter for the local filesystem.
+// LocalFS implements types.FSAdapter for the local filesystem.
 type LocalFS struct {
-	root string // absolute, normalized root path for this migration
+	root string
+
+	OnWarning func(msg string)
+
+	// PageCacheHints, when true, uses posix_fadvise (where supported) to hint
+	// sequential read on open and drop cache after read close—reduces page cache
+	// retention during migration without root. No effect on Windows/macOS stub.
+	PageCacheHints bool
+
+	warnState    warnState
+	rootDev      uint64
+	rootDevValid bool
 }
 
 // NewLocalFS constructs a new LocalFS adapter rooted at the given path.
@@ -25,27 +39,32 @@ func NewLocalFS(rootPath string) (*LocalFS, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Normalize to forward slashes
 	abs = strings.ReplaceAll(filepath.Clean(abs), "\\", "/")
-	return &LocalFS{root: abs}, nil
+	l := &LocalFS{root: abs}
+	if fi, err := os.Stat(abs); err == nil {
+		if dev, ok := deviceID(fi); ok {
+			l.rootDev = dev
+			l.rootDevValid = true
+		}
+	}
+	return l, nil
 }
 
-// relativize builds a relative path from the parent's path and the node name.
 func (l *LocalFS) relativize(nodeName string, parentRelPath string) string {
-	// If parent is root, child path is /{childName}
 	if parentRelPath == "/" {
 		return "/" + nodeName
 	}
-	// Otherwise, build path as {parentRelPath}/{name}
 	return parentRelPath + "/" + nodeName
 }
 
-// ListChildren lists immediate children of the given node identifier (absolute path).
-// The depth and parentPath parameters are ignored for local filesystems.
+// ListChildren lists immediate children; only directories and regular files (Lstat-gated).
 func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string) (types.ListResult, error) {
 	var result types.ListResult
 
-	// Get parent's relative path by stripping root
+	if isPseudoFSPath(l.root) {
+		l.warnState.warnPseudoFS(l.OnWarning)
+	}
+
 	normalizedParentId := strings.ReplaceAll(identifier, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
 	p := strings.ReplaceAll(filepath.Clean(normalizedParentId), "\\", "/")
@@ -63,42 +82,55 @@ func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string)
 		parentRelPath = "/"
 	}
 
+	if _, err := listableDirInfo(identifier); err != nil {
+		return result, err
+	}
+
 	entries, err := os.ReadDir(identifier)
 	if err != nil {
 		return result, err
 	}
 
 	for _, entry := range entries {
-		info, err := entry.Info()
+		name := entry.Name()
+		fullPath := filepath.Join(identifier, name)
+		fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+
+		fi, err := os.Lstat(fullPath)
 		if err != nil {
 			continue
 		}
 
-		fullPath := filepath.Join(identifier, entry.Name())
-		fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+		rel := l.relativize(name, parentRelPath)
+		lastUpdated := fi.ModTime().Format(time.RFC3339)
 
-		// Use parent's relative path to build child's relative path
-		rel := l.relativize(entry.Name(), parentRelPath)
-
-		if entry.IsDir() {
+		if childListableAsFolder(fi) {
+			if l.rootDevValid {
+				if dev, ok := deviceID(fi); ok && dev != l.rootDev {
+					l.warnState.warnFsBoundary(l.OnWarning, fullPath)
+				}
+			}
 			result.Folders = append(result.Folders, types.Folder{
-				ServiceID:    fullPath,      // physical identifier
-				ParentId:     identifier,    // parent physical path
-				ParentPath:   parentRelPath, // parent's relative path
-				DisplayName:  entry.Name(),
-				LocationPath: rel, // logical, root-relative path
-				LastUpdated:  info.ModTime().Format(time.RFC3339),
+				ServiceID:    fullPath,
+				ParentId:     identifier,
+				ParentPath:   parentRelPath,
+				DisplayName:  name,
+				LocationPath: rel,
+				LastUpdated:  lastUpdated,
 				Type:         types.NodeTypeFolder,
 			})
-		} else {
+			continue
+		}
+
+		if childCopyableAsFile(fi) {
 			result.Files = append(result.Files, types.File{
 				ServiceID:    fullPath,
 				ParentId:     identifier,
-				ParentPath:   parentRelPath, // parent's relative path
-				DisplayName:  entry.Name(),
+				ParentPath:   parentRelPath,
+				DisplayName:  name,
 				LocationPath: rel,
-				LastUpdated:  info.ModTime().Format(time.RFC3339),
-				Size:         info.Size(),
+				LastUpdated:  lastUpdated,
+				Size:         fi.Size(),
 				Type:         types.NodeTypeFile,
 			})
 		}
@@ -107,14 +139,24 @@ func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string)
 	return result, nil
 }
 
-// OpenRead opens the absolute file path (identifier) and returns a readable stream.
-// The worker owns the copy loop - this just provides the stream.
+// OpenRead opens a regular file only; wraps with ctxstream for cancellation.
 func (l *LocalFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
+	fi, err := os.Lstat(fileID)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", ErrNotRegularFile, fileID)
+	}
 	file, err := os.Open(fileID)
 	if err != nil {
 		return nil, err
 	}
-	return file, nil
+	if l.PageCacheHints {
+		_ = fadviseSequential(file)
+		return newFadviseReadCloser(ctx, file), nil
+	}
+	return ctxstream.NewReadCloser(ctx, file), nil
 }
 
 // CreateFolder creates a new folder under a parent absolute path.
@@ -122,7 +164,6 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	fullPath := filepath.Join(parentId, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
-	// Get parent's relative path by stripping root
 	normalizedParentId := strings.ReplaceAll(parentId, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
 	p := strings.ReplaceAll(filepath.Clean(normalizedParentId), "\\", "/")
@@ -149,7 +190,6 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 		return types.Folder{}, err
 	}
 
-	// Use parent's relative path to build child's relative path
 	relPath := l.relativize(name, parentRelPath)
 
 	return types.Folder{
@@ -163,14 +203,11 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 	}, nil
 }
 
-// CreateFile creates an empty file at the destination path with metadata.
-// The file is created and immediately closed, ready for OpenWrite to open it for writing.
+// CreateFile creates an empty file at the destination path.
 func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
-	// Build full path
 	fullPath := filepath.Join(parentID, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
-	// Get parent's relative path by stripping root
 	normalizedParentId := strings.ReplaceAll(parentID, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
 	p := strings.ReplaceAll(filepath.Clean(normalizedParentId), "\\", "/")
@@ -188,7 +225,6 @@ func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size in
 		parentRelPath = "/"
 	}
 
-	// Create empty file
 	f, err := os.Create(fullPath)
 	if err != nil {
 		return types.File{}, err
@@ -197,13 +233,11 @@ func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size in
 		return types.File{}, err
 	}
 
-	// Get file info for metadata
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return types.File{}, err
 	}
 
-	// Use parent's relative path to build file's relative path
 	relPath := l.relativize(name, parentRelPath)
 
 	return types.File{
@@ -213,20 +247,25 @@ func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size in
 		DisplayName:  name,
 		LocationPath: relPath,
 		LastUpdated:  info.ModTime().Format(time.RFC3339),
-		Size:         size, // Use provided size (may be 0 initially)
+		Size:         size,
 		Type:         types.NodeTypeFile,
 	}, nil
 }
 
-// OpenWrite opens an existing file for writing in truncate mode.
-// The file should already exist from CreateFile. The worker writes to this stream,
-// and Close() commits the write.
+// OpenWrite opens an existing regular file for writing (truncate).
 func (l *LocalFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	fi, err := os.Lstat(fileID)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", ErrNotRegularFile, fileID)
+	}
 	file, err := os.OpenFile(fileID, os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return nil, err
 	}
-	return file, nil
+	return ctxstream.NewWriteCloser(ctx, file), nil
 }
 
 // NormalizePath cleans and normalizes any incoming path string.

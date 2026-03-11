@@ -1,7 +1,7 @@
 // Copyright 2025 Sylos contributors
 // SPDX-License-Identifier: MIT License
 
-package fs
+package spectra
 
 import (
 	"bytes"

@@ -4,11 +4,12 @@ The `fs` package provides filesystem adapters and service management for the Syl
 
 ## Overview
 
-This package contains:
+Subpackages and the root `fs` package:
 
-- **LocalFS**: Adapter for local operating system filesystem
-- **SpectraFS**: Adapter for Spectra filesystem simulator
-- **ServiceManager**: Centralized service configuration and lifecycle management
+- **`fs`**: `ServiceManager`, `GetCopyBuffer`, service loading
+- **`fs/local`**: `LocalFS` adapter (Lstat-gated listing, context-aware streams)
+- **`fs/spectra`**: `SpectraSession`, `SpectraFS` adapter
+- **`fs/ctxstream`**: Context-aware `io.ReadCloser` / `io.WriteCloser` wrappers
 
 All adapters implement the `types.FSAdapter` interface, providing a consistent API regardless of the underlying storage backend.
 
@@ -24,6 +25,28 @@ The `LocalFS` adapter provides access to the local operating system filesystem. 
 - **Path normalization**: Automatically normalizes paths to use forward slashes
 - **Root-relative paths**: Maintains logical paths relative to a configured root
 - **Unrestricted browsing**: Can be configured to allow browsing outside the root path
+- **Optional page cache hints**: See below
+
+#### Page cache hints (POSIX fadvise)
+
+During bulk copy, Linux (and some other Unix kernels) grow the **page cache** aggressively—RSS can jump far beyond your user-space buffers. That cache is reclaimable but can still pressure memory.
+
+`LocalFS.PageCacheHints` (default `false`) opts into **posix_fadvise** on the **read** path only:
+
+- After `OpenRead`: `FADV_SEQUENTIAL`—kernel can tune read-ahead for sequential access.
+- On `Close` after reading: `FADV_DONTNEED`—hint that cached pages for that file need not be kept.
+
+These calls are **per-fd hints** and **do not require root**—safe for a locked-down service account. They are no-ops on platforms without fadvise support (stub build).
+
+**Not covered here** (system-wide, typically **root**): `vm.dirty_ratio`, `vm.dirty_background_ratio`, `drop_caches`, etc. Use those only when you control the host.
+
+Example:
+
+```go
+localFS, _ := local.NewLocalFS("/data")
+localFS.PageCacheHints = true
+// OpenRead/Close on this adapter will issue fadvise where supported
+```
 
 #### Example
 
@@ -34,12 +57,12 @@ import (
     "io"
     "log"
     "strings"
-    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs/local"
     "codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // Create a local filesystem adapter rooted at /home/user
-localFS, err := fs.NewLocalFS("/home/user")
+localFS, err := local.NewLocalFS("/home/user")
 if err != nil {
     log.Fatal(err)
 }
@@ -136,11 +159,11 @@ import (
     "fmt"
     "io"
     "log"
-    "codeberg.org/Sylos/Sylos-FS/pkg/fs"
+    "codeberg.org/Sylos/Sylos-FS/pkg/fs/spectra"
     "codeberg.org/Sylos/Spectra/sdk"
 )
 
-// Create a Spectra SDK instance
+// Create a Spectra SDK instance (or use spectra.NewSpectraSession for managed lifecycle)
 spectraSDK, err := sdk.New("/path/to/spectra/config")
 if err != nil {
     log.Fatal(err)
@@ -148,7 +171,7 @@ if err != nil {
 defer spectraSDK.Close()
 
 // Create a SpectraFS adapter
-spectraFS, err := fs.NewSpectraFS(spectraSDK, "root", "primary")
+spectraFS, err := spectra.NewSpectraFS(spectraSDK, "root", "primary", false)
 if err != nil {
     log.Fatal(err)
 }
