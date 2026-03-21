@@ -10,8 +10,18 @@ Subpackages and the root `fs` package:
 - **`fs/local`**: `LocalFS` adapter (Lstat-gated listing, context-aware streams)
 - **`fs/spectra`**: `SpectraSession`, `SpectraFS` adapter
 - **`fs/ctxstream`**: Context-aware `io.ReadCloser` / `io.WriteCloser` wrappers
+- **`credentials`** (sibling package `pkg/credentials`): AES-256-GCM encrypt/decrypt, HKDF per-connection keys, `DoWithAuthRetry` for cloud adapters
 
 All adapters implement the `types.FSAdapter` interface, providing a consistent API regardless of the underlying storage backend.
+
+### Encrypted credentials and HKDF (`pkg/credentials`)
+
+The engine stores one **envelope master key** (32 random bytes from `credentials.GenerateMasterKey`) and stable **connection IDs** in its own store. It does **not** need a secret map from key hash to file path.
+
+- **`DeriveConnectionKey(masterKey, connectionID)`** — HKDF-SHA256 (`salt` = connection ID, `info` = `credentials.HKDFInfo`). Use the 32-byte result with **`Encrypt`** / **`Decrypt`** for `creds.conf` blobs. Wrong master key or connection ID fails at decrypt (GCM auth). Empty `connectionID` is rejected.
+- **Migration**: Blobs created with the raw master key (no HKDF) are **not** compatible with derived keys; re-encrypt if anything was shipped that way.
+- **`FSAdapter.Initialize(masterKey, connectionID)`** and **`RegisterCredentials(data, masterKey, connectionID)`** — cloud adapters derive the key internally; **`LocalFS`** / **`SpectraFS`** ignore these (no-ops).
+- **`DoWithAuthRetry`** — cloud adapters wrap provider calls: on **`ErrNeedsRefresh`** (or custom `IsAuthFailure`) run **`Refresh`** once, retry; on **`RateLimitedError`** (or custom `IsRateLimited`) sleep (capped) and retry. Workers only call normal FS methods.
 
 ## Filesystem Adapters
 

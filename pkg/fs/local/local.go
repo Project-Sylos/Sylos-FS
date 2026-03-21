@@ -274,3 +274,18 @@ func (l *LocalFS) NormalizePath(path string) string {
 	p = strings.ReplaceAll(p, "\\", "/")
 	return strings.TrimSuffix(p, "/")
 }
+
+// Initialize is a no-op for LocalFS.
+func (l *LocalFS) Initialize(_ []byte, _ string) error {
+	return nil
+}
+
+// RegisterCredentials is a no-op for LocalFS.
+func (l *LocalFS) RegisterCredentials(_ []byte, _ []byte, _ string) error {
+	return nil
+}
+
+// HasValidCredentials always returns true for LocalFS.
+func (l *LocalFS) HasValidCredentials() bool {
+	return true
+}

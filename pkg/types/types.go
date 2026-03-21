@@ -171,6 +171,19 @@ type FSAdapter interface {
 	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
 	OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error)
 	NormalizePath(path string) string
+
+	// Initialize configures the adapter with the envelope master key and stable
+	// connectionID. Cloud adapters derive a per-connection key (HKDF) to decrypt
+	// creds.conf; local and Spectra implementations are no-ops.
+	Initialize(masterKey []byte, connectionID string) error
+
+	// RegisterCredentials stores new credentials (e.g. from OAuth), encrypted
+	// with a key derived from masterKey and connectionID. Local and Spectra are no-ops.
+	RegisterCredentials(credsData []byte, masterKey []byte, connectionID string) error
+
+	// HasValidCredentials reports whether the adapter has usable credentials.
+	// Local and Spectra implementations return true.
+	HasValidCredentials() bool
 }
 
 // ServiceContext wraps a filesystem adapter with a service name

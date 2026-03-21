@@ -380,6 +380,21 @@ func (s *SpectraFS) NormalizePath(path string) string {
 	return types.NormalizeLocationPath(path)
 }
 
+// Initialize is a no-op for SpectraFS.
+func (s *SpectraFS) Initialize(_ []byte, _ string) error {
+	return nil
+}
+
+// RegisterCredentials is a no-op for SpectraFS.
+func (s *SpectraFS) RegisterCredentials(_ []byte, _ []byte, _ string) error {
+	return nil
+}
+
+// HasValidCredentials always returns true for SpectraFS.
+func (s *SpectraFS) HasValidCredentials() bool {
+	return true
+}
+
 // GetSDKInstance returns the underlying Spectra SDK instance.
 // This is used to check if multiple adapters share the same instance.
 func (s *SpectraFS) GetSDKInstance() *sdk.SpectraFS {
