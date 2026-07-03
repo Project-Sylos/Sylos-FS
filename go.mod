@@ -8,3 +8,5 @@ require (
 )
 
 require go.etcd.io/bbolt v1.3.10 // indirect
+
+replace codeberg.org/Sylos/Spectra => ../Spectra

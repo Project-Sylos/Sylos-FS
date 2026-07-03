@@ -31,6 +31,11 @@ type LocalFS struct {
 	warnState    warnState
 	rootDev      uint64
 	rootDevValid bool
+
+	degradation *types.FSDegradationState
+	types.ConcurrencyHint
+
+	injectBeforeOp func(operation string, attempt int) error // tests only
 }
 
 // NewLocalFS constructs a new LocalFS adapter rooted at the given path.
@@ -40,7 +45,7 @@ func NewLocalFS(rootPath string) (*LocalFS, error) {
 		return nil, err
 	}
 	abs = strings.ReplaceAll(filepath.Clean(abs), "\\", "/")
-	l := &LocalFS{root: abs}
+	l := &LocalFS{root: abs, degradation: types.NewFSDegradationState()}
 	if fi, err := os.Stat(abs); err == nil {
 		if dev, ok := deviceID(fi); ok {
 			l.rootDev = dev
@@ -59,6 +64,16 @@ func (l *LocalFS) relativize(nodeName string, parentRelPath string) string {
 
 // ListChildren lists immediate children; only directories and regular files (Lstat-gated).
 func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string) (types.ListResult, error) {
+	var result types.ListResult
+	err := l.withClassifiedRetry("ListChildren", func() error {
+		var innerErr error
+		result, innerErr = l.listChildrenOnce(identifier, depth, parentPath)
+		return innerErr
+	})
+	return result, err
+}
+
+func (l *LocalFS) listChildrenOnce(identifier string, depth *int, parentPath string) (types.ListResult, error) {
 	var result types.ListResult
 
 	if isPseudoFSPath(l.root) {
@@ -141,6 +156,16 @@ func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string)
 
 // OpenRead opens a regular file only; wraps with ctxstream for cancellation.
 func (l *LocalFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
+	var rc io.ReadCloser
+	err := l.withClassifiedRetryCtx(ctx, "OpenRead", func() error {
+		var innerErr error
+		rc, innerErr = l.openReadOnce(ctx, fileID)
+		return innerErr
+	})
+	return rc, err
+}
+
+func (l *LocalFS) openReadOnce(ctx context.Context, fileID string) (io.ReadCloser, error) {
 	fi, err := os.Lstat(fileID)
 	if err != nil {
 		return nil, err
@@ -161,6 +186,16 @@ func (l *LocalFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, e
 
 // CreateFolder creates a new folder under a parent absolute path.
 func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
+	var folder types.Folder
+	err := l.withClassifiedRetry("CreateFolder", func() error {
+		var innerErr error
+		folder, innerErr = l.createFolderOnce(parentId, name)
+		return innerErr
+	})
+	return folder, err
+}
+
+func (l *LocalFS) createFolderOnce(parentId, name string) (types.Folder, error) {
 	fullPath := filepath.Join(parentId, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
@@ -205,6 +240,16 @@ func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
 
 // CreateFile creates an empty file at the destination path.
 func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
+	var file types.File
+	err := l.withClassifiedRetryCtx(ctx, "CreateFile", func() error {
+		var innerErr error
+		file, innerErr = l.createFileOnce(parentID, name, size)
+		return innerErr
+	})
+	return file, err
+}
+
+func (l *LocalFS) createFileOnce(parentID, name string, size int64) (types.File, error) {
 	fullPath := filepath.Join(parentID, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
@@ -254,6 +299,16 @@ func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size in
 
 // OpenWrite opens an existing regular file for writing (truncate).
 func (l *LocalFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	var wc io.WriteCloser
+	err := l.withClassifiedRetryCtx(ctx, "OpenWrite", func() error {
+		var innerErr error
+		wc, innerErr = l.openWriteOnce(ctx, fileID)
+		return innerErr
+	})
+	return wc, err
+}
+
+func (l *LocalFS) openWriteOnce(ctx context.Context, fileID string) (io.WriteCloser, error) {
 	fi, err := os.Lstat(fileID)
 	if err != nil {
 		return nil, err
@@ -288,4 +343,40 @@ func (l *LocalFS) RegisterCredentials(_ []byte, _ []byte, _ string) error {
 // HasValidCredentials always returns true for LocalFS.
 func (l *LocalFS) HasValidCredentials() bool {
 	return true
+}
+
+// DegradationState implements types.FSDegradationReporter (no local signals emitted).
+func (l *LocalFS) DegradationState() types.FSDegradationSnapshot {
+	if l.degradation == nil {
+		return types.FSDegradationSnapshot{}
+	}
+	return l.degradation.DegradationState()
+}
+
+// RecordSignal implements types.FSDegradationReporter.
+func (l *LocalFS) RecordSignal(sig types.FSDegradationSignal) {
+	if l.degradation != nil {
+		l.degradation.RecordSignal(sig)
+	}
+}
+
+// GetDegradationState returns shared degradation telemetry for this adapter.
+func (l *LocalFS) GetDegradationState() *types.FSDegradationState {
+	return l.degradation
+}
+
+const (
+	localListPageMin     = 20
+	localListPageMax     = 1000
+	localListPageDefault = 100
+)
+
+// ListChildrenPagination implements types.FSListChildrenPagination.
+func (l *LocalFS) ListChildrenPagination() types.ListChildrenPagination {
+	return types.ListChildrenPagination{
+		MinPageSize:                   localListPageMin,
+		MaxPageSize:                   localListPageMax,
+		DefaultPageSize:               localListPageDefault,
+		PreferLargePagesUnderThrottle: false,
+	}
 }

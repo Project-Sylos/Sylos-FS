@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"codeberg.org/Sylos/Spectra/sdk"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 // SpectraSession manages a single Spectra SDK instance and provides adapters for it.
@@ -21,6 +22,7 @@ type SpectraSession struct {
 	configPath  string
 	closed      bool
 	isEphemeral bool
+	degradation *types.FSDegradationState
 }
 
 type spectraConfig struct {
@@ -44,6 +46,7 @@ func NewSpectraSession(configPath string) (*SpectraSession, error) {
 		configPath:  configPath,
 		closed:      false,
 		isEphemeral: isEphemeral,
+		degradation: types.NewFSDegradationState(),
 	}, nil
 }
 
@@ -104,12 +107,19 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 		return nil, fmt.Errorf("cannot create adapter: session has no SpectraFS instance")
 	}
 
-	adapter, err := NewSpectraFS(spectraFS, rootID, world, isEphemeral)
+	adapter, err := NewSpectraFS(spectraFS, rootID, world, isEphemeral, WithDegradationState(s.degradation))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adapter: %w", err)
 	}
 
 	return adapter, nil
+}
+
+// DegradationState returns shared session degradation telemetry.
+func (s *SpectraSession) DegradationState() *types.FSDegradationState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.degradation
 }
 
 // GetConfigPath returns the config path used to create this session.

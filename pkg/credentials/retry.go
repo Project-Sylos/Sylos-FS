@@ -69,6 +69,12 @@ type RetryConfig struct {
 
 	// MaxIterations bounds total loop iterations (default 64) to prevent runaway retries.
 	MaxIterations int
+
+	// OnRateLimitWait is called before sleeping on a rate limit (even when retries eventually succeed).
+	OnRateLimitWait func(retryAfter time.Duration, attempt int)
+
+	// OnRateLimitExhausted is called when MaxRateLimitWaits is exceeded.
+	OnRateLimitExhausted func(err error)
 }
 
 // IsRateLimitedDefault classifies *RateLimitedError and errors.As wrappers.
@@ -104,6 +110,9 @@ func DoWithAuthRetry(ctx context.Context, cfg RetryConfig, op func() error) erro
 		if cfg.IsRateLimited != nil {
 			if d, ok := cfg.IsRateLimited(err); ok {
 				if rateWaits >= cfg.MaxRateLimitWaits {
+					if cfg.OnRateLimitExhausted != nil {
+						cfg.OnRateLimitExhausted(err)
+					}
 					return err
 				}
 				sleep := d
@@ -112,6 +121,9 @@ func DoWithAuthRetry(ctx context.Context, cfg RetryConfig, op func() error) erro
 				}
 				if sleep > cfg.MaxRateLimitSleep {
 					sleep = cfg.MaxRateLimitSleep
+				}
+				if cfg.OnRateLimitWait != nil {
+					cfg.OnRateLimitWait(sleep, rateWaits+1)
 				}
 				if err := sleepCtx(ctx, sleep); err != nil {
 					return err

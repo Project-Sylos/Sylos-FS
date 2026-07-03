@@ -23,12 +23,24 @@ type SpectraFS struct {
 	rootID      string // The root node ID (now always "root" in single-table design)
 	world       string // The world name ("primary", "s1", "s2", etc.) for filtering queries
 	isEphemeral bool   // true if in ephemeral mode, false for persistent mode
+	degradation *types.FSDegradationState
+	types.ConcurrencyHint
+}
+
+// SpectraFSOption configures optional SpectraFS behavior.
+type SpectraFSOption func(*SpectraFS)
+
+// WithDegradationState attaches shared degradation telemetry to the adapter.
+func WithDegradationState(state *types.FSDegradationState) SpectraFSOption {
+	return func(s *SpectraFS) {
+		s.degradation = state
+	}
 }
 
 // newSpectraFS creates a SpectraFS adapter from a session-owned SDK instance.
 // The adapter does not own the lifecycle of the SDK instance - the session does.
 // This function does NOT validate the root node - it assumes the session is valid.
-func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphemeral bool) (*SpectraFS, error) {
+func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphemeral bool, opts ...SpectraFSOption) (*SpectraFS, error) {
 	if spectraFS == nil {
 		return nil, fmt.Errorf("spectra filesystem instance cannot be nil")
 	}
@@ -37,17 +49,20 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphem
 		world = "primary" // Default to primary world if not specified
 	}
 
-	// Note: We do NOT validate the root node here because:
-	// 1. The session is responsible for ensuring the SDK is valid
-	// 2. Validation will happen on first use (e.g., ListChildren)
-	// 3. This matches the Migration-Engine pattern of creating adapters without validation
-
-	return &SpectraFS{
+	s := &SpectraFS{
 		fs:          spectraFS,
 		rootID:      rootID,
 		world:       world,
 		isEphemeral: isEphemeral,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.degradation == nil {
+		s.degradation = types.NewFSDegradationState()
+	}
+
+	return s, nil
 }
 
 // ListChildren lists immediate children of the given node identifier (Spectra node ID).
@@ -79,7 +94,7 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 			TableName:  s.world,
 			Depth:      depth,
 		}
-		listResult, err := s.fs.ListChildren(req)
+		listResult, err := s.listChildrenWithRetry(req)
 		if err != nil {
 			return result, err
 		}
@@ -87,9 +102,7 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 	}
 
 	// Persistent mode: optional depth, no parentPath needed; validate node via GetNode
-	parentNode, err := s.fs.GetNode(&sdk.GetNodeRequest{
-		ID: identifier,
-	})
+	parentNode, err := s.getNodeWithRetry(context.Background(), identifier)
 	if err != nil {
 		return result, err
 	}
@@ -106,12 +119,28 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 		req.Depth = depth
 	}
 
-	listResult, err := s.fs.ListChildren(req)
+	listResult, err := s.listChildrenWithRetry(req)
 	if err != nil {
 		return result, err
 	}
 
 	return s.convertListResult(listResult, identifier), nil
+}
+
+func (s *SpectraFS) listChildrenWithRetry(req *sdk.ListChildrenRequest) (*sdk.ListResult, error) {
+	var out *sdk.ListResult
+	err := s.withClassifiedRetry(context.Background(), "ListChildren", func() error {
+		res, callErr := s.fs.ListChildren(req)
+		if callErr != nil {
+			return callErr
+		}
+		out = res
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // convertListResult maps Spectra list response to types.ListResult.
@@ -159,23 +188,35 @@ func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int, depth *int
 // OpenRead retrieves file data from Spectra and returns a readable stream.
 // The worker owns the copy loop - this just provides the stream.
 func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
-	// Get file data from Spectra
-	fileData, _, err := s.fs.GetFileData(fileID)
+	var fileData []byte
+	err := s.withClassifiedRetry(ctx, "GetFileData", func() error {
+		data, _, callErr := s.fs.GetFileData(fileID)
+		if callErr != nil {
+			return callErr
+		}
+		fileData = data
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	// Return plain reader - worker handles the copy loop
 	return io.NopCloser(strings.NewReader(string(fileData))), nil
 }
 
 // CreateFolder creates a new folder under the specified parent node.
 func (s *SpectraFS) CreateFolder(parentId, name string) (types.Folder, error) {
-	// Create folder in Spectra using request struct with world
-	node, err := s.fs.CreateFolder(&sdk.CreateFolderRequest{
-		ParentID:  parentId,
-		Name:      name,
-		TableName: s.world, // Create in the configured world
+	var node *sdk.Node
+	err := s.withClassifiedRetry(context.Background(), "CreateFolder", func() error {
+		n, callErr := s.fs.CreateFolder(&sdk.CreateFolderRequest{
+			ParentID:  parentId,
+			Name:      name,
+			TableName: s.world,
+		})
+		if callErr != nil {
+			return callErr
+		}
+		node = n
+		return nil
 	})
 	if err != nil {
 		return types.Folder{}, err
@@ -203,9 +244,7 @@ func (s *SpectraFS) CreateFile(ctx context.Context, parentID, name string, size 
 	// Format: "pending:<parentID>:<name>" - this is a temporary identifier.
 
 	// Get parent node to construct the path
-	parentNode, err := s.fs.GetNode(&sdk.GetNodeRequest{
-		ID: parentID,
-	})
+	parentNode, err := s.getNodeWithRetry(ctx, parentID)
 	if err != nil {
 		return types.File{}, fmt.Errorf("failed to get parent node: %w", err)
 	}
@@ -362,14 +401,17 @@ func (swc *spectraWriteCloser) Close() error {
 	name := parts[2]
 
 	// Create the file with actual data
-	_, err = swc.spectraFS.fs.UploadFile(&sdk.UploadFileRequest{
-		ParentID:  parentID,
-		Name:      name,
-		Data:      data,
-		TableName: swc.spectraFS.world,
+	uploadErr := swc.spectraFS.withClassifiedRetry(context.Background(), "UploadFile", func() error {
+		_, innerErr := swc.spectraFS.fs.UploadFile(&sdk.UploadFileRequest{
+			ParentID:  parentID,
+			Name:      name,
+			Data:      data,
+			TableName: swc.spectraFS.world,
+		})
+		return innerErr
 	})
-	if err != nil {
-		return fmt.Errorf("failed to create file with data: %w", err)
+	if uploadErr != nil {
+		return fmt.Errorf("failed to create file with data: %w", uploadErr)
 	}
 
 	return nil
@@ -395,8 +437,63 @@ func (s *SpectraFS) HasValidCredentials() bool {
 	return true
 }
 
+// DegradationState implements types.FSDegradationReporter.
+func (s *SpectraFS) DegradationState() types.FSDegradationSnapshot {
+	if s.degradation == nil {
+		return types.FSDegradationSnapshot{}
+	}
+	return s.degradation.DegradationState()
+}
+
+// RecordSignal implements types.FSDegradationReporter.
+func (s *SpectraFS) RecordSignal(sig types.FSDegradationSignal) {
+	if s.degradation != nil {
+		s.degradation.RecordSignal(sig)
+	}
+}
+
+func (s *SpectraFS) recordDegradation(operation string, err error) {
+	if s.degradation == nil || err == nil {
+		return
+	}
+	class := ClassifySpectraError(err)
+	if class.Bucket != types.FSErrorThrottle {
+		return
+	}
+	s.recordDegradationSignal(types.FSDegradationRateLimit, operation, class.RetryAfter)
+}
+
+func rateLimitFromError(err error) (time.Duration, bool) {
+	class := ClassifySpectraError(err)
+	if class.Bucket == types.FSErrorThrottle {
+		return class.RetryAfter, true
+	}
+	return 0, false
+}
+
+// GetDegradationState returns the shared degradation tracker, if any.
+func (s *SpectraFS) GetDegradationState() *types.FSDegradationState {
+	return s.degradation
+}
+
 // GetSDKInstance returns the underlying Spectra SDK instance.
 // This is used to check if multiple adapters share the same instance.
 func (s *SpectraFS) GetSDKInstance() *sdk.SpectraFS {
 	return s.fs
+}
+
+const (
+	spectraListPageMin     = 20
+	spectraListPageMax     = 10000
+	spectraListPageDefault = 100
+)
+
+// ListChildrenPagination implements types.FSListChildrenPagination.
+func (s *SpectraFS) ListChildrenPagination() types.ListChildrenPagination {
+	return types.ListChildrenPagination{
+		MinPageSize:                   spectraListPageMin,
+		MaxPageSize:                   spectraListPageMax,
+		DefaultPageSize:               spectraListPageDefault,
+		PreferLargePagesUnderThrottle: true,
+	}
 }
