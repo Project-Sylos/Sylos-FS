@@ -21,6 +21,7 @@ type ServiceType string
 const (
 	ServiceTypeLocal   ServiceType = "local"
 	ServiceTypeSpectra ServiceType = "spectra"
+	ServiceTypeCloud   ServiceType = "cloud"
 )
 
 // Folder represents a basic folder with attributes like name, path, identifier, and parentID.
@@ -165,11 +166,12 @@ func (p *ListPager) Next() (page ListPage, hasPage bool) {
 
 // FSAdapter is the interface that all filesystem adapters must implement
 type FSAdapter interface {
-	ListChildren(identifier string, depth *int, parentPath string) (ListResult, error)
+	ListChildren(ctx context.Context, identifier string, depth *int, parentPath string) (ListResult, error)
 	OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error)
-	CreateFolder(parentId, name string) (Folder, error)
+	CreateFolder(ctx context.Context, parentId, name string) (Folder, error)
 	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
 	OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error)
+	DeleteNode(ctx context.Context, nodeID string, nodeType string) error
 	NormalizePath(path string) string
 
 	// Initialize configures the adapter with the envelope master key and stable
@@ -237,12 +239,42 @@ type Source struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
+// NodeRef identifies a file or folder for batch operations.
+type NodeRef struct {
+	ID   string
+	Type string // NodeTypeFile or NodeTypeFolder
+}
+
+// DeleteNodeError describes a single failed delete in a batch.
+type DeleteNodeError struct {
+	ID      string
+	Message string
+}
+
+// DeleteNodesResult is the outcome of a batch delete (partial success allowed).
+type DeleteNodesResult struct {
+	Deleted []string
+	Errors  []DeleteNodeError
+}
+
+// BrowseMutationRequest scopes create/delete operations during folder browsing.
+type BrowseMutationRequest struct {
+	ServiceID    string
+	ConnectionID string // cloud / spectra session
+	Role         string // source | destination (spectra world mapping)
+	RootType     string
+	DriveID      string
+	ContextID    string // current browse folder id (cloud adapter context)
+}
+
 // ListChildrenRequest represents a request to list children
 type ListChildrenRequest struct {
 	ServiceID   string
 	Identifier  string
 	Role        string // "source" or "destination" - used to map "spectra" to the correct world
 	SessionID   string // Session ID for Spectra services (required for Spectra, ignored for others)
+	RootType    string // Cloud browse root type (my_drive, user_root, team_folder, etc.)
+	DriveID     string // Cloud namespace metadata (Dropbox team_folder/shared_folder)
 	Offset      int    // Pagination offset (default: 0)
 	Limit       int    // Pagination limit (default: 100, max: 1000)
 	FoldersOnly bool   // If true, only return folders and apply limit to folders only
@@ -262,9 +294,17 @@ type PaginationInfo struct {
 
 // DriveInfo represents information about a drive/volume
 type DriveInfo struct {
-	Path        string `json:"path"`        // Absolute path to the drive (e.g., "C:\" on Windows, "/" on Unix)
-	DisplayName string `json:"displayName"` // Display name (e.g., "C:" or "Local Disk (C:)")
-	Type        string `json:"type"`        // Drive type (e.g., "fixed", "removable", "network")
+	Path        string `json:"path"`                  // Browse root: mount point or block device path
+	DisplayName string `json:"displayName,omitempty"` // Human-readable label for UI defaults
+	Type        string `json:"type"`                  // fixed, removable, network, unknown
+	MountPoint  string `json:"mountPoint,omitempty"`  // Mount path when mounted (same as Path for mounted volumes)
+	Device      string `json:"device,omitempty"`      // Block device path (e.g. /dev/sda2, \\.\PhysicalDrive0)
+	FileSystem  string `json:"fileSystem,omitempty"`  // ext4, ntfs, apfs, etc.
+	Mounted     bool   `json:"mounted"`               // Whether the volume is currently mounted
+	Label       string `json:"label,omitempty"`       // Volume label when available
+	TotalBytes  int64  `json:"totalBytes"`            // Total capacity in bytes; 0 if unknown
+	FreeBytes   int64  `json:"freeBytes"`             // Available space in bytes; 0 if unknown
+	UsedBytes   int64  `json:"usedBytes"`             // Used space in bytes; 0 if unknown
 }
 
 // LocalServiceConfig represents configuration for a local filesystem service
@@ -294,6 +334,13 @@ type SpectraServiceConfig struct {
 	DivergingTreeMode *bool
 }
 
+// CloudServiceConfig represents configuration for a cloud filesystem provider entry.
+type CloudServiceConfig struct {
+	ID         string
+	Name       string
+	ProviderID string // google_drive, dropbox, etc.
+}
+
 // ServiceDefinition represents a service definition
 type ServiceDefinition struct {
 	ID      string
@@ -301,4 +348,5 @@ type ServiceDefinition struct {
 	Type    ServiceType
 	Local   *LocalServiceConfig
 	Spectra *SpectraServiceConfig
+	Cloud   *CloudServiceConfig
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/fs/ctxstream"
+	"codeberg.org/Sylos/Sylos-FS/pkg/pathutil"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
@@ -63,9 +64,12 @@ func (l *LocalFS) relativize(nodeName string, parentRelPath string) string {
 }
 
 // ListChildren lists immediate children; only directories and regular files (Lstat-gated).
-func (l *LocalFS) ListChildren(identifier string, depth *int, parentPath string) (types.ListResult, error) {
+func (l *LocalFS) ListChildren(ctx context.Context, identifier string, depth *int, parentPath string) (types.ListResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var result types.ListResult
-	err := l.withClassifiedRetry("ListChildren", func() error {
+	err := l.withClassifiedRetryCtx(ctx, "ListChildren", func() error {
 		var innerErr error
 		result, innerErr = l.listChildrenOnce(identifier, depth, parentPath)
 		return innerErr
@@ -185,9 +189,12 @@ func (l *LocalFS) openReadOnce(ctx context.Context, fileID string) (io.ReadClose
 }
 
 // CreateFolder creates a new folder under a parent absolute path.
-func (l *LocalFS) CreateFolder(parentId, name string) (types.Folder, error) {
+func (l *LocalFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var folder types.Folder
-	err := l.withClassifiedRetry("CreateFolder", func() error {
+	err := l.withClassifiedRetryCtx(ctx, "CreateFolder", func() error {
 		var innerErr error
 		folder, innerErr = l.createFolderOnce(parentId, name)
 		return innerErr
@@ -236,6 +243,51 @@ func (l *LocalFS) createFolderOnce(parentId, name string) (types.Folder, error) 
 		LastUpdated:  info.ModTime().Format(time.RFC3339),
 		Type:         types.NodeTypeFolder,
 	}, nil
+}
+
+// DeleteNode removes a file or folder by absolute path.
+func (l *LocalFS) DeleteNode(ctx context.Context, nodeID string, nodeType string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return l.withClassifiedRetryCtx(ctx, "DeleteNode", func() error {
+		return l.deleteNodeOnce(nodeID, nodeType)
+	})
+}
+
+func (l *LocalFS) deleteNodeOnce(nodeID, nodeType string) error {
+	if err := l.assertDeletePathAllowed(nodeID); err != nil {
+		return err
+	}
+
+	cleanPath, err := filepath.Abs(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+	cleanPath = filepath.Clean(cleanPath)
+
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("node not found: %s", cleanPath)
+		}
+		return err
+	}
+
+	switch nodeType {
+	case types.NodeTypeFile:
+		if info.IsDir() {
+			return fmt.Errorf("expected file, found folder: %s", cleanPath)
+		}
+		return os.Remove(cleanPath)
+	case types.NodeTypeFolder:
+		if !info.IsDir() {
+			return fmt.Errorf("expected folder, found file: %s", cleanPath)
+		}
+		return os.RemoveAll(cleanPath)
+	default:
+		return fmt.Errorf("unsupported node type: %s", nodeType)
+	}
 }
 
 // CreateFile creates an empty file at the destination path.
@@ -343,6 +395,25 @@ func (l *LocalFS) RegisterCredentials(_ []byte, _ []byte, _ string) error {
 // HasValidCredentials always returns true for LocalFS.
 func (l *LocalFS) HasValidCredentials() bool {
 	return true
+}
+
+func (l *LocalFS) assertDeletePathAllowed(targetPath string) error {
+	ok, err := pathutil.WithinRoot(l.root, targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+	if ok {
+		return nil
+	}
+	absRoot, err := filepath.Abs(l.root)
+	if err != nil {
+		return fmt.Errorf("invalid adapter root: %w", err)
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+	return fmt.Errorf("path %s is outside allowed root %s", filepath.Clean(absTarget), filepath.Clean(absRoot))
 }
 
 // DegradationState implements types.FSDegradationReporter (no local signals emitted).

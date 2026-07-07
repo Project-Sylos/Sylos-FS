@@ -43,7 +43,7 @@ func TestListChildrenInjectedEIOAmbiguousPromotion(t *testing.T) {
 		return nil
 	})
 
-	_, err = l.ListChildren(dir, nil, "/")
+	_, err = l.ListChildren(context.Background(), dir, nil, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestListChildrenInjectedFatalNoRetry(t *testing.T) {
 		return nil
 	})
 
-	_, err = l.ListChildren(dir, nil, "/")
+	_, err = l.ListChildren(context.Background(), dir, nil, "/")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -99,7 +99,7 @@ func TestCreateFolderClassifiedRetryTransient(t *testing.T) {
 	})
 
 	sub := filepath.Join(dir, "sub")
-	_, err = l.CreateFolder(dir, "sub")
+	_, err = l.CreateFolder(context.Background(), dir, "sub")
 	if err != nil {
 		t.Fatal(err)
 	}

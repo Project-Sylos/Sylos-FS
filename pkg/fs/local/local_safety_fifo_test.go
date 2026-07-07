@@ -29,7 +29,7 @@ func TestListChildren_skipsFIFO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := l.ListChildren(dir, nil, "")
+	result, err := l.ListChildren(context.Background(), dir, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

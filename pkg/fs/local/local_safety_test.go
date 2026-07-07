@@ -45,7 +45,7 @@ func TestListChildren_notDirectory_returnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = l.ListChildren(p, nil, "")
+	_, err = l.ListChildren(context.Background(), p, nil, "")
 	if err == nil {
 		t.Fatal("expected error listing file path")
 	}

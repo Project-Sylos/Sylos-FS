@@ -72,7 +72,10 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphem
 // NewListPager(result, pageSize).
 // For ephemeral mode, depth and parentPath must be provided by the caller (no persisted node to read from).
 // For persistent mode, depth and parentPath are optional.
-func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath string) (types.ListResult, error) {
+func (s *SpectraFS) ListChildren(ctx context.Context, identifier string, depth *int, parentPath string) (types.ListResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var result types.ListResult
 
 	// For ephemeral mode, depth and parentPath are required (caller must supply; nothing persisted)
@@ -94,7 +97,7 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 			TableName:  s.world,
 			Depth:      depth,
 		}
-		listResult, err := s.listChildrenWithRetry(req)
+		listResult, err := s.listChildrenWithRetry(ctx, req)
 		if err != nil {
 			return result, err
 		}
@@ -102,7 +105,7 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 	}
 
 	// Persistent mode: optional depth, no parentPath needed; validate node via GetNode
-	parentNode, err := s.getNodeWithRetry(context.Background(), identifier)
+	parentNode, err := s.getNodeWithRetry(ctx, identifier)
 	if err != nil {
 		return result, err
 	}
@@ -119,7 +122,7 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 		req.Depth = depth
 	}
 
-	listResult, err := s.listChildrenWithRetry(req)
+	listResult, err := s.listChildrenWithRetry(ctx, req)
 	if err != nil {
 		return result, err
 	}
@@ -127,9 +130,9 @@ func (s *SpectraFS) ListChildren(identifier string, depth *int, parentPath strin
 	return s.convertListResult(listResult, identifier), nil
 }
 
-func (s *SpectraFS) listChildrenWithRetry(req *sdk.ListChildrenRequest) (*sdk.ListResult, error) {
+func (s *SpectraFS) listChildrenWithRetry(ctx context.Context, req *sdk.ListChildrenRequest) (*sdk.ListResult, error) {
 	var out *sdk.ListResult
-	err := s.withClassifiedRetry(context.Background(), "ListChildren", func() error {
+	err := s.withClassifiedRetry(ctx, "ListChildren", func() error {
 		res, callErr := s.fs.ListChildren(req)
 		if callErr != nil {
 			return callErr
@@ -177,8 +180,8 @@ func (s *SpectraFS) convertListResult(listResult *sdk.ListResult, identifier str
 // NewChildrenPager is a convenience wrapper that returns a ListPager over the
 // children of a Spectra node. It mirrors the SDK-style pagination model used
 // by many cloud services while keeping the FSAdapter interface simple.
-func (s *SpectraFS) NewChildrenPager(identifier string, pageSize int, depth *int, parentPath string) (*types.ListPager, error) {
-	result, err := s.ListChildren(identifier, depth, parentPath)
+func (s *SpectraFS) NewChildrenPager(ctx context.Context, identifier string, pageSize int, depth *int, parentPath string) (*types.ListPager, error) {
+	result, err := s.ListChildren(ctx, identifier, depth, parentPath)
 	if err != nil {
 		return nil, err
 	}
@@ -204,9 +207,12 @@ func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser,
 }
 
 // CreateFolder creates a new folder under the specified parent node.
-func (s *SpectraFS) CreateFolder(parentId, name string) (types.Folder, error) {
+func (s *SpectraFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var node *sdk.Node
-	err := s.withClassifiedRetry(context.Background(), "CreateFolder", func() error {
+	err := s.withClassifiedRetry(ctx, "CreateFolder", func() error {
 		n, callErr := s.fs.CreateFolder(&sdk.CreateFolderRequest{
 			ParentID:  parentId,
 			Name:      name,
@@ -232,6 +238,23 @@ func (s *SpectraFS) CreateFolder(parentId, name string) (types.Folder, error) {
 		DepthLevel:   node.DepthLevel,
 		Type:         types.NodeTypeFolder,
 	}, nil
+}
+
+// DeleteNode removes a file or folder from Spectra.
+func (s *SpectraFS) DeleteNode(ctx context.Context, nodeID string, nodeType string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(nodeID) == "" {
+		return fmt.Errorf("spectra: node id is required")
+	}
+	_ = nodeType
+	return s.withClassifiedRetry(ctx, "DeleteNode", func() error {
+		return s.fs.DeleteNode(&sdk.DeleteNodeRequest{
+			ID:        nodeID,
+			TableName: s.world,
+		})
+	})
 }
 
 // CreateFile creates a file entry in Spectra with metadata only.

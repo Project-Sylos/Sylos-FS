@@ -46,6 +46,7 @@ type FSDegradationState struct {
 	mu               sync.RWMutex
 	rateLimitedUntil time.Time
 	recentHits       int64
+	throttleStreak   int
 	ambiguous        *AmbiguousErrorTracker
 }
 
@@ -96,6 +97,42 @@ func (s *FSDegradationState) RecordSignal(sig FSDegradationSignal) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// ThrottleBackoffJitter is added after explicit Retry-After values from providers.
+const ThrottleBackoffJitter = 250 * time.Millisecond
+
+// MaxThrottleBackoff caps exponential throttle sleeps (Google recommends bounded backoff).
+const MaxThrottleBackoff = 64 * time.Second
+
+// ScheduleThrottleBackoff returns the next sleep duration for a throttle episode using
+// exponential backoff (1s, 2s, 4s, …) plus ThrottleBackoffJitter.
+func (s *FSDegradationState) ScheduleThrottleBackoff() time.Duration {
+	if s == nil {
+		return time.Second + ThrottleBackoffJitter
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.throttleStreak++
+	n := s.throttleStreak
+	if n > 6 {
+		n = 6
+	}
+	base := time.Second << (n - 1)
+	if base > MaxThrottleBackoff {
+		base = MaxThrottleBackoff
+	}
+	return base + ThrottleBackoffJitter
+}
+
+// ClearThrottleStreak resets exponential backoff after a successful FS operation.
+func (s *FSDegradationState) ClearThrottleStreak() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.throttleStreak = 0
+	s.mu.Unlock()
 }
 
 // TakeRecentHits returns recent hit count and resets it (read-and-reset for observer polling).
