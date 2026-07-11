@@ -19,12 +19,23 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var linuxNetworkFSTypes = map[string]struct{}{
+	"cifs": {}, "smb3": {}, "smb2": {}, "smb": {},
+	"nfs": {}, "nfs4": {},
+	"fuse.sshfs": {}, "fuse.rclone": {}, "fuse.gocryptfs": {},
+	"afpfs": {}, "davfs": {}, "ncpfs": {},
+}
+
 var linuxDriveFSTypes = map[string]struct{}{
 	"ext4": {}, "ext3": {}, "ext2": {},
 	"xfs": {}, "btrfs": {},
 	"vfat": {}, "exfat": {}, "ntfs": {}, "ntfs3": {},
 	"f2fs": {}, "reiserfs": {}, "jfs": {},
 	"fuseblk": {}, // ntfs-3g and some exfat/fuse mounts on desktop Linux
+}
+
+var darwinNetworkFSTypes = map[string]struct{}{
+	"smbfs": {}, "nfs": {}, "afpfs": {}, "cifs": {}, "webdav": {},
 }
 
 // ListDrives enumerates local volumes and block devices for the current Unix-like OS.
@@ -73,7 +84,7 @@ func listDarwinDrives() ([]types.DriveInfo, error) {
 				MountPoint:  path,
 				Mounted:     true,
 				DisplayName: entry.Name(),
-				Type:        "fixed",
+				Type:        darwinVolumeType(path),
 				Label:       entry.Name(),
 			}
 			applyFilesystemUsage(&drive, path)
@@ -167,11 +178,14 @@ func linuxMountedDrives() ([]types.DriveInfo, map[string]struct{}, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		mountPoint, source, fstype, ok := parseMountinfoLine(scanner.Text())
-		if !ok || !linuxIsBlockDeviceSource(source) {
+		if !ok || !linuxIsSupportedDriveSource(source, fstype) {
 			continue
 		}
 		if _, ok := linuxDriveFSTypes[fstype]; !ok {
-			continue
+			if _, ok := linuxNetworkFSTypes[fstype]; !ok && !strings.HasPrefix(fstype, "fuse.sshfs") &&
+				!strings.HasPrefix(fstype, "fuse.rclone") && !strings.HasPrefix(fstype, "fuse.gocryptfs") {
+				continue
+			}
 		}
 		if strings.HasPrefix(mountPoint, "/snap/") {
 			continue
@@ -281,8 +295,8 @@ func linuxMountedDrive(mountPoint, source, fstype string) types.DriveInfo {
 		Device:      source,
 		FileSystem:  fstype,
 		Mounted:     true,
-		DisplayName: linuxMountDisplayName(mountPoint, source),
-		Type:        linuxDriveType(source),
+		DisplayName: linuxMountDisplayName(mountPoint, source, fstype),
+		Type:        linuxDriveTypeForMount(source, fstype),
 		Label:       linuxDeviceLabel(source),
 	}
 	applyFilesystemUsage(&drive, mountPoint)
@@ -367,6 +381,47 @@ func linuxIsBlockDeviceSource(source string) bool {
 	return !strings.HasPrefix(base, "loop") && !strings.HasPrefix(base, "ram")
 }
 
+func linuxIsNetworkFSType(fstype string) bool {
+	if _, ok := linuxNetworkFSTypes[fstype]; ok {
+		return true
+	}
+	return strings.HasPrefix(fstype, "fuse.sshfs") ||
+		strings.HasPrefix(fstype, "fuse.rclone") ||
+		strings.HasPrefix(fstype, "fuse.gocryptfs")
+}
+
+func linuxIsNetworkSource(source string) bool {
+	if strings.HasPrefix(source, "//") {
+		return true
+	}
+	if idx := strings.Index(source, ":/"); idx > 0 {
+		host := source[:idx]
+		return host != "" && !strings.HasPrefix(source, "/dev/")
+	}
+	if strings.Contains(source, "@") && strings.Contains(source, ":") {
+		return !strings.HasPrefix(source, "/dev/")
+	}
+	return false
+}
+
+func linuxIsSupportedDriveSource(source, fstype string) bool {
+	if linuxIsBlockDeviceSource(source) {
+		return true
+	}
+	return linuxIsNetworkFSType(fstype) || linuxIsNetworkSource(source)
+}
+
+func linuxDriveTypeForMount(source, fstype string) string {
+	if linuxIsNetworkFSType(fstype) || linuxIsNetworkSource(source) {
+		return "network"
+	}
+	return linuxDriveType(source)
+}
+
+func darwinIsNetworkSource(source string) bool {
+	return linuxIsNetworkSource(source)
+}
+
 func linuxSkipBlockDevice(name string) bool {
 	switch {
 	case strings.HasPrefix(name, "loop"):
@@ -433,9 +488,15 @@ func linuxParentDisk(part string) string {
 	return part
 }
 
-func linuxMountDisplayName(mountPoint, source string) string {
+func linuxMountDisplayName(mountPoint, source, fstype string) string {
 	if mountPoint == "/" {
+		if linuxIsNetworkFSType(fstype) || linuxIsNetworkSource(source) {
+			return fmt.Sprintf("Network (/) — %s", source)
+		}
 		return fmt.Sprintf("Local Disk (/) — %s", filepath.Base(source))
+	}
+	if linuxIsNetworkFSType(fstype) || linuxIsNetworkSource(source) {
+		return fmt.Sprintf("%s — %s", mountPoint, source)
 	}
 	return fmt.Sprintf("%s — %s", mountPoint, filepath.Base(source))
 }

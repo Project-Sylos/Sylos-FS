@@ -32,7 +32,7 @@ func TestDoWithAuthRetryAuthThenRefresh(t *testing.T) {
 			refreshCalls++
 			return nil
 		},
-		IsAuthFailure: IsAuthFailureDefault,
+		IsAuthFailure: func(err error) bool { return errors.Is(err, ErrNeedsRefresh) },
 	}
 	err := DoWithAuthRetry(t.Context(), cfg, func() error {
 		calls++
@@ -55,7 +55,7 @@ func TestDoWithAuthRetryAuthThenRefresh(t *testing.T) {
 func TestDoWithAuthRetryAuthNoRefreshReturns(t *testing.T) {
 	cfg := RetryConfig{
 		Refresh:       nil,
-		IsAuthFailure: IsAuthFailureDefault,
+		IsAuthFailure: func(err error) bool { return errors.Is(err, ErrNeedsRefresh) },
 	}
 	want := fmt.Errorf("wrap: %w", ErrNeedsRefresh)
 	err := DoWithAuthRetry(t.Context(), cfg, func() error {
@@ -71,7 +71,7 @@ func TestDoWithAuthRetryRefreshFails(t *testing.T) {
 		Refresh: func(ctx context.Context) error {
 			return errors.New("refresh boom")
 		},
-		IsAuthFailure: IsAuthFailureDefault,
+		IsAuthFailure: func(err error) bool { return errors.Is(err, ErrNeedsRefresh) },
 	}
 	err := DoWithAuthRetry(t.Context(), cfg, func() error {
 		return ErrNeedsRefresh

@@ -18,6 +18,15 @@ type StoredCredentials struct {
 	TokenURI     string   `json:"token_uri,omitempty"`
 	ClientID     string   `json:"client_id,omitempty"`
 	ClientSecret string   `json:"client_secret,omitempty"`
+
+	// SFTP (non-OAuth form credentials)
+	Host                   string `json:"host,omitempty"`
+	Port                   int    `json:"port,omitempty"`
+	Username               string `json:"username,omitempty"`
+	Password               string `json:"password,omitempty"`
+	PrivateKey             string `json:"private_key,omitempty"`
+	KeyPassphrase          string `json:"key_passphrase,omitempty"`
+	HostKey string `json:"host_key,omitempty"`
 }
 
 // EncryptStoredCredentials serializes and encrypts credentials with a derived connection key.

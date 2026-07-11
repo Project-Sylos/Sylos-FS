@@ -23,10 +23,7 @@ func ListDrives() ([]types.DriveInfo, error) {
 			continue
 		}
 
-		driveType := "unknown"
-		if _, err := os.ReadDir(drivePath); err == nil {
-			driveType = "fixed"
-		}
+		driveType := windowsDriveType(drivePath)
 
 		drive := types.DriveInfo{
 			Path:        drivePath,
@@ -58,5 +55,27 @@ func applyFilesystemUsage(d *types.DriveInfo, path string) {
 	d.FreeBytes = int64(available)
 	if totalBytes >= available {
 		d.UsedBytes = int64(totalBytes - available)
+	}
+}
+
+func windowsDriveType(path string) string {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "unknown"
+	}
+	switch windows.GetDriveType(pathPtr) {
+	case windows.DRIVE_REMOTE:
+		return "network"
+	case windows.DRIVE_REMOVABLE:
+		return "removable"
+	case windows.DRIVE_FIXED:
+		return "fixed"
+	case windows.DRIVE_CDROM:
+		return "removable"
+	default:
+		if _, err := os.ReadDir(path); err == nil {
+			return "fixed"
+		}
+		return "unknown"
 	}
 }

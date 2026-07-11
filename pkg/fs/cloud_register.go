@@ -6,4 +6,5 @@ package fs
 import (
 	_ "codeberg.org/Sylos/Sylos-FS/pkg/fs/dropbox"
 	_ "codeberg.org/Sylos/Sylos-FS/pkg/fs/googledrive"
+	_ "codeberg.org/Sylos/Sylos-FS/pkg/fs/sftp"
 )

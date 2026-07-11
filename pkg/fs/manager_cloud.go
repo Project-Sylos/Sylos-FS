@@ -111,6 +111,9 @@ func (m *ServiceManager) ListCloudRoots(ctx context.Context, providerID, connect
 	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
 		return nil, fmt.Errorf("cloud connection %s not found", connectionID)
 	}
+	if conn.cloudProvider != "" && conn.cloudProvider != providerID {
+		return nil, fmt.Errorf("cloud connection %s is for provider %q, not %q", connectionID, conn.cloudProvider, providerID)
+	}
 	factory, err := cloud.Factory(providerID)
 	if err != nil {
 		return nil, err
@@ -155,7 +158,7 @@ func (m *ServiceManager) RevokeCloudConnection(connectionID, migrationDir string
 	if conn != nil && shouldDelete && conn.cloud != nil {
 		_ = conn.cloud.Close()
 	}
-	cloud.DefaultTokenStore.ClearConnection(connectionID)
+	cloud.DefaultTokenStore.ClearAccessToken(connectionID)
 	return nil
 }
 

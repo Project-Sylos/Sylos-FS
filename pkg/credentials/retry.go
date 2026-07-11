@@ -86,11 +86,6 @@ func IsRateLimitedDefault(err error) (time.Duration, bool) {
 	return 0, false
 }
 
-// IsAuthFailureDefault treats ErrNeedsRefresh and wrapped variants as auth failures.
-func IsAuthFailureDefault(err error) bool {
-	return errors.Is(err, ErrNeedsRefresh)
-}
-
 // DoWithAuthRetry runs op in a loop: on rate limit it sleeps (capped) and retries;
 // on auth failure it runs Refresh at most once then retries op. Returns the last error
 // if op never succeeds.
@@ -161,7 +156,7 @@ func normalizeRetryConfig(cfg RetryConfig) RetryConfig {
 		cfg.MaxIterations = 64
 	}
 	if cfg.IsAuthFailure == nil {
-		cfg.IsAuthFailure = IsAuthFailureDefault
+		cfg.IsAuthFailure = func(err error) bool { return errors.Is(err, ErrNeedsRefresh) }
 	}
 	return cfg
 }

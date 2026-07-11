@@ -115,7 +115,7 @@ func (m *ServiceManager) browseAdapter(_ context.Context, req types.BrowseMutati
 		default:
 			world = "primary"
 		}
-		def, err := m.findSpectraServiceByWorld(world)
+		def, err := m.GetServiceDefinitionByWorld(world)
 		if err != nil {
 			return nil, err
 		}
@@ -151,7 +151,7 @@ func (m *ServiceManager) browseAdapter(_ context.Context, req types.BrowseMutati
 		return m.localBrowseAdapter(contextID, unrestrictedDef)
 	}
 
-	def, err := m.serviceDefinition(serviceID)
+	def, err := m.GetServiceDefinition(serviceID)
 	if err != nil {
 		return nil, err
 	}

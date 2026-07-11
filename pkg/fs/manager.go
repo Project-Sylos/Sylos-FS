@@ -437,7 +437,7 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 			world = "primary"
 		}
 
-		def, err := m.findSpectraServiceByWorld(world)
+		def, err := m.GetServiceDefinitionByWorld(world)
 		if err != nil {
 			return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("spectra service with world %s not found: %w", world, err)
 		}
@@ -483,7 +483,7 @@ func (m *ServiceManager) ListChildren(ctx context.Context, req types.ListChildre
 		return result.Result, result.Pagination, nil
 	}
 
-	def, err := m.serviceDefinition(serviceID)
+	def, err := m.GetServiceDefinition(serviceID)
 	if err != nil {
 		return types.ListResult{}, types.PaginationInfo{}, err
 	}
@@ -688,7 +688,7 @@ func (m *ServiceManager) ListDrives(ctx context.Context, serviceID string) ([]ty
 		}
 	} else {
 		// Verify the service exists
-		_, err := m.serviceDefinition(serviceID)
+		_, err := m.GetServiceDefinition(serviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -704,7 +704,7 @@ func (m *ServiceManager) MountDrive(ctx context.Context, serviceID, devicePath s
 			return types.DriveInfo{}, fmt.Errorf("no local filesystem services configured")
 		}
 	} else {
-		if _, err := m.serviceDefinition(serviceID); err != nil {
+		if _, err := m.GetServiceDefinition(serviceID); err != nil {
 			return types.DriveInfo{}, err
 		}
 	}
@@ -712,27 +712,22 @@ func (m *ServiceManager) MountDrive(ctx context.Context, serviceID, devicePath s
 	return local.MountDrive(devicePath)
 }
 
-// serviceDefinition returns a service definition by ID
-func (m *ServiceManager) serviceDefinition(id string) (serviceDefinition, error) {
+// GetServiceDefinition returns a service definition by ID
+func (m *ServiceManager) GetServiceDefinition(id string) (types.ServiceDefinition, error) {
 	def, exists := m.getService(id)
 	if !exists {
-		return serviceDefinition{}, ErrServiceNotFound
-	}
-	return def, nil
-}
-
-// findSpectraServiceByWorld finds the first Spectra service with the given world.
-func (m *ServiceManager) findSpectraServiceByWorld(world string) (serviceDefinition, error) {
-	def, exists := m.findSpectraServiceByWorldLocked(world)
-	if !exists {
-		return serviceDefinition{}, ErrServiceNotFound
+		return types.ServiceDefinition{}, ErrServiceNotFound
 	}
 	return def, nil
 }
 
 // GetServiceDefinitionByWorld finds the first Spectra service with the given world.
 func (m *ServiceManager) GetServiceDefinitionByWorld(world string) (types.ServiceDefinition, error) {
-	return m.findSpectraServiceByWorld(world)
+	def, exists := m.findSpectraServiceByWorldLocked(world)
+	if !exists {
+		return types.ServiceDefinition{}, ErrServiceNotFound
+	}
+	return def, nil
 }
 
 // RegisterSpectraSession creates a new Spectra session and registers it with the ServiceManager.
@@ -908,7 +903,11 @@ func (m *ServiceManager) HasConnection(connectionID string) bool {
 	return ok
 }
 
-// GetServiceDefinition returns a service definition by ID
-func (m *ServiceManager) GetServiceDefinition(id string) (types.ServiceDefinition, error) {
-	return m.serviceDefinition(id)
+// CloudConnectionProvider returns the provider ID for a registered cloud connection.
+func (m *ServiceManager) CloudConnectionProvider(connectionID string) (string, bool) {
+	conn, exists := m.getConnection(connectionID)
+	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloudProvider == "" {
+		return "", false
+	}
+	return conn.cloudProvider, true
 }

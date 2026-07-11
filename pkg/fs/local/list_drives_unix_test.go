@@ -59,6 +59,48 @@ func TestLinuxIsBlockDeviceSource(t *testing.T) {
 	}
 }
 
+func TestLinuxIsNetworkSource(t *testing.T) {
+	t.Parallel()
+
+	if !linuxIsNetworkSource("//server/share") {
+		t.Fatal("expected cifs-style source")
+	}
+	if !linuxIsNetworkSource("192.168.1.10:/export") {
+		t.Fatal("expected nfs-style source")
+	}
+	if linuxIsNetworkSource("/dev/sda2") {
+		t.Fatal("expected block device to be excluded")
+	}
+}
+
+func TestLinuxIsSupportedDriveSource(t *testing.T) {
+	t.Parallel()
+
+	if !linuxIsSupportedDriveSource("/dev/sda2", "ext4") {
+		t.Fatal("expected block device ext4 mount")
+	}
+	if !linuxIsSupportedDriveSource("//server/share", "cifs") {
+		t.Fatal("expected cifs network mount")
+	}
+	if !linuxIsSupportedDriveSource("host:/export", "nfs4") {
+		t.Fatal("expected nfs network mount")
+	}
+	if linuxIsSupportedDriveSource("tmpfs", "tmpfs") {
+		t.Fatal("expected tmpfs to be excluded")
+	}
+}
+
+func TestLinuxDriveTypeForMount(t *testing.T) {
+	t.Parallel()
+
+	if got := linuxDriveTypeForMount("//server/share", "cifs"); got != "network" {
+		t.Fatalf("expected network, got %q", got)
+	}
+	if got := linuxDriveTypeForMount("/dev/sda2", "ext4"); got != "fixed" {
+		t.Fatalf("expected fixed, got %q", got)
+	}
+}
+
 func TestLinuxIsMountedDeviceResolvesSymlinks(t *testing.T) {
 	t.Parallel()
 

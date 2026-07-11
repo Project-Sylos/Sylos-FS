@@ -63,8 +63,3 @@ func (s *TokenStore) ClearAccessToken(connectionID string) {
 	defer s.mu.Unlock()
 	delete(s.tokens, connectionID)
 }
-
-// ClearConnection removes all in-memory state for a connection.
-func (s *TokenStore) ClearConnection(connectionID string) {
-	s.ClearAccessToken(connectionID)
-}

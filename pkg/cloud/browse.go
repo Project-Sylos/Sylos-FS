@@ -15,15 +15,6 @@ import (
 // For nested folders, leave rootType empty and pass the folder's provider id as identifier.
 // driveID carries namespace metadata for team_folder and shared_folder roots (from /roots driveId).
 func BrowseFolder(identifier, rootType, driveID string) (types.Folder, error) {
-	return browseFolder(identifier, rootType, driveID)
-}
-
-// BrowseRoot builds a folder descriptor from a cloud.Root (includes driveId/namespace metadata).
-func BrowseRoot(root Root) (types.Folder, error) {
-	return browseFolder(root.ID, root.RootType, root.DriveID)
-}
-
-func browseFolder(identifier, rootType, driveID string) (types.Folder, error) {
 	identifier = strings.TrimSpace(identifier)
 	rootType = strings.TrimSpace(rootType)
 
@@ -126,4 +117,9 @@ func browseFolder(identifier, rootType, driveID string) (types.Folder, error) {
 	default:
 		return types.Folder{}, fmt.Errorf("cloud browse: unknown rootType %q", rootType)
 	}
+}
+
+// BrowseRoot builds a folder descriptor from a cloud.Root (includes driveId/namespace metadata).
+func BrowseRoot(root Root) (types.Folder, error) {
+	return BrowseFolder(root.ID, root.RootType, root.DriveID)
 }

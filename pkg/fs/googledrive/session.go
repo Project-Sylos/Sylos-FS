@@ -106,7 +106,7 @@ func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
-	s.tokens.ClearConnection(s.connectionID)
+	s.tokens.ClearAccessToken(s.connectionID)
 	return nil
 }
 
