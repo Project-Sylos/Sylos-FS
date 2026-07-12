@@ -99,7 +99,7 @@ func TestCreateFolderClassifiedRetryTransient(t *testing.T) {
 	})
 
 	sub := filepath.Join(dir, "sub")
-	_, err = l.CreateFolder(context.Background(), dir, "sub")
+	_, err = l.CreateFolder(context.Background(), dir, "sub", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

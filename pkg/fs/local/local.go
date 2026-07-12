@@ -189,7 +189,7 @@ func (l *LocalFS) openReadOnce(ctx context.Context, fileID string) (io.ReadClose
 }
 
 // CreateFolder creates a new folder under a parent absolute path.
-func (l *LocalFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+func (l *LocalFS) CreateFolder(ctx context.Context, parentId, name string, _ map[string]string) (types.Folder, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

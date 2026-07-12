@@ -207,7 +207,7 @@ func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser,
 }
 
 // CreateFolder creates a new folder under the specified parent node.
-func (s *SpectraFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+func (s *SpectraFS) CreateFolder(ctx context.Context, parentId, name string, _ map[string]string) (types.Folder, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

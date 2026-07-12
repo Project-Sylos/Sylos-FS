@@ -168,7 +168,7 @@ func (p *ListPager) Next() (page ListPage, hasPage bool) {
 type FSAdapter interface {
 	ListChildren(ctx context.Context, identifier string, depth *int, parentPath string) (ListResult, error)
 	OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error)
-	CreateFolder(ctx context.Context, parentId, name string) (Folder, error)
+	CreateFolder(ctx context.Context, parentId, name string, metadata map[string]string) (Folder, error)
 	CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (File, error)
 	OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error)
 	DeleteNode(ctx context.Context, nodeID string, nodeType string) error
@@ -219,6 +219,49 @@ func NormalizeLocationPath(p string) string {
 		return "/"
 	}
 	return cleaned
+}
+
+// ListChildrenBasePath picks the migration root-relative parent for child LocationPath construction.
+// Prefer the caller-supplied parentPath (current folder being listed); fall back to migration root.
+func ListChildrenBasePath(rootLocationPath, parentPath string) string {
+	if pp := strings.TrimSpace(parentPath); pp != "" {
+		return NormalizeLocationPath(pp)
+	}
+	return NormalizeLocationPath(rootLocationPath)
+}
+
+// LogicalParentFromCreateMetadata returns the migration root-relative parent path for create
+// responses when metadata carries location_path or parent_path (copy/ME convention).
+func LogicalParentFromCreateMetadata(metadata map[string]string, fallback string) string {
+	if metadata != nil {
+		if loc := strings.TrimSpace(metadata["location_path"]); loc != "" {
+			loc = NormalizeLocationPath(loc)
+			dir := path.Dir(loc)
+			if dir == "." || dir == "" {
+				return "/"
+			}
+			return NormalizeLocationPath(dir)
+		}
+		if pp := strings.TrimSpace(metadata["parent_path"]); pp != "" {
+			return NormalizeLocationPath(pp)
+		}
+	}
+	return NormalizeLocationPath(fallback)
+}
+
+// ChildLocationFromCreateMetadata returns the migration root-relative child path for create
+// responses when metadata carries location_path; otherwise joins parentPath and name.
+func ChildLocationFromCreateMetadata(metadata map[string]string, parentPath, name string) string {
+	if metadata != nil {
+		if loc := strings.TrimSpace(metadata["location_path"]); loc != "" {
+			return NormalizeLocationPath(loc)
+		}
+	}
+	pp := NormalizeLocationPath(parentPath)
+	if pp == "/" {
+		return NormalizeLocationPath("/" + name)
+	}
+	return NormalizeLocationPath(pp + "/" + name)
 }
 
 // NormalizeParentPath normalizes stored parent_path strings but preserves empty values

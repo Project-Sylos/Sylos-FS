@@ -20,7 +20,7 @@ func TestCreateAndDeleteFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	folder, err := l.CreateFolder(context.Background(), dir, "child")
+	folder, err := l.CreateFolder(context.Background(), dir, "child", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

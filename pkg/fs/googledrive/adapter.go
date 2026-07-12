@@ -68,10 +68,7 @@ func (d *DriveFS) ListChildren(ctx context.Context, identifier string, depth *in
 			return err
 		}
 
-		basePath := types.NormalizeLocationPath(d.root.LocationPath)
-		if basePath == "/" && parentPath != "" {
-			basePath = types.NormalizeLocationPath(parentPath)
-		}
+		basePath := types.ListChildrenBasePath(d.root.LocationPath, parentPath)
 
 		result = types.ListResult{}
 		for _, f := range resp.Files {
@@ -152,7 +149,7 @@ func (d *DriveFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, e
 	return rc, err
 }
 
-func (d *DriveFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+func (d *DriveFS) CreateFolder(ctx context.Context, parentId, name string, metadata map[string]string) (types.Folder, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -178,7 +175,8 @@ func (d *DriveFS) CreateFolder(ctx context.Context, parentId, name string) (type
 		if err != nil {
 			return err
 		}
-		out = d.fileToFolder(created, types.NormalizeLocationPath(d.root.LocationPath))
+		basePath := types.LogicalParentFromCreateMetadata(metadata, d.root.LocationPath)
+		out = d.fileToFolder(created, basePath)
 		return nil
 	})
 	return out, err
@@ -205,15 +203,14 @@ func (d *DriveFS) CreateFile(ctx context.Context, parentID, name string, size in
 	if parentID == "" {
 		parentID = d.ctx.FolderID
 	}
-	_ = metadata
-	basePath := types.NormalizeLocationPath(d.root.LocationPath)
-	loc := path.Join(basePath, name)
+	basePath := types.LogicalParentFromCreateMetadata(metadata, d.root.LocationPath)
+	loc := types.ChildLocationFromCreateMetadata(metadata, basePath, name)
 	return types.File{
 		ServiceID:    pendingFileID(parentID, name),
 		ParentId:     parentID,
 		ParentPath:   basePath,
 		DisplayName:  name,
-		LocationPath: types.NormalizeLocationPath(loc),
+		LocationPath: loc,
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,
 		Type:         types.NodeTypeFile,

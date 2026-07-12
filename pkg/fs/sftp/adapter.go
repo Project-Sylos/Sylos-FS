@@ -119,7 +119,7 @@ func (f *SftpFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, er
 	return rc, err
 }
 
-func (f *SftpFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+func (f *SftpFS) CreateFolder(ctx context.Context, parentId, name string, _ map[string]string) (types.Folder, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

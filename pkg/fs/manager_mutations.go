@@ -32,7 +32,7 @@ func (m *ServiceManager) CreateFolder(ctx context.Context, req types.BrowseMutat
 	if err != nil {
 		return types.Folder{}, err
 	}
-	return adapter.CreateFolder(ctx, parentID, sanitized)
+	return adapter.CreateFolder(ctx, parentID, sanitized, nil)
 }
 
 // DeleteNodes deletes files and folders during browse setup.

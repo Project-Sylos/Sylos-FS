@@ -98,10 +98,7 @@ func (d *DropboxFS) ListChildren(ctx context.Context, identifier string, depth *
 		if err != nil {
 			return err
 		}
-		basePath := types.NormalizeLocationPath(d.root.LocationPath)
-		if basePath == "/" && parentPath != "" {
-			basePath = types.NormalizeLocationPath(parentPath)
-		}
+		basePath := types.ListChildrenBasePath(d.root.LocationPath, parentPath)
 		result = types.ListResult{}
 		for _, e := range entries {
 			if e.Tag == "folder" {
@@ -211,7 +208,7 @@ func (d *DropboxFS) resolveLocationPath(locationPath string) string {
 	return loc
 }
 
-func (d *DropboxFS) CreateFolder(ctx context.Context, parentId, name string) (types.Folder, error) {
+func (d *DropboxFS) CreateFolder(ctx context.Context, parentId, name string, metadata map[string]string) (types.Folder, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -233,7 +230,11 @@ func (d *DropboxFS) CreateFolder(ctx context.Context, parentId, name string) (ty
 		if err != nil {
 			return err
 		}
-		out = d.metaToFolder(meta, folderBasePath(meta, types.NormalizeLocationPath(d.root.LocationPath)))
+		basePath := types.LogicalParentFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath))
+		if metadata == nil || (strings.TrimSpace(metadata["location_path"]) == "" && strings.TrimSpace(metadata["parent_path"]) == "") {
+			basePath = folderBasePath(meta, basePath)
+		}
+		out = d.metaToFolder(meta, basePath)
 		return nil
 	})
 	return out, err
