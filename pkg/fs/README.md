@@ -21,7 +21,7 @@ The engine stores one **envelope master key** (32 random bytes from `credentials
 - **`DeriveConnectionKey(masterKey, connectionID)`** — HKDF-SHA256 (`salt` = connection ID, `info` = `credentials.HKDFInfo`). Use the 32-byte result with **`Encrypt`** / **`Decrypt`** for `creds.conf` blobs. Wrong master key or connection ID fails at decrypt (GCM auth). Empty `connectionID` is rejected.
 - **Migration**: Blobs created with the raw master key (no HKDF) are **not** compatible with derived keys; re-encrypt if anything was shipped that way.
 - **`FSAdapter.Initialize(masterKey, connectionID)`** and **`RegisterCredentials(data, masterKey, connectionID)`** — cloud adapters derive the key internally; **`LocalFS`** / **`SpectraFS`** ignore these (no-ops).
-- **`DoWithAuthRetry`** — cloud adapters wrap provider calls: on **`ErrNeedsRefresh`** (or custom `IsAuthFailure`) run **`Refresh`** once, retry; on **`RateLimitedError`** (or custom `IsRateLimited`) sleep (capped) and retry. Workers only call normal FS methods.
+- **`DoWithClassifiedRetry` / `DoWithAuthRetry`** — FS middleware around adapter I/O: on auth failure run **`Refresh` once** then retry the op; on rate limit sleep (capped) and retry. Workers only call normal FS methods and block until success or a classified error (including auth after refresh fails). **LocalFS** has no token refresh. Cloud + Spectra wire `IsAuthFailure` + `Refresh`.
 
 ## Filesystem Adapters
 

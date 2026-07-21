@@ -88,6 +88,7 @@ func TestDoWithAuthRetryRateLimitThenOK(t *testing.T) {
 	var calls int
 	cfg := RetryConfig{
 		IsRateLimited:         IsRateLimitedDefault,
+		MaxRateLimitWaits:     10,
 		MaxRateLimitSleep:     50 * time.Millisecond,
 		DefaultRateLimitSleep: time.Millisecond,
 		MaxIterations:         20,

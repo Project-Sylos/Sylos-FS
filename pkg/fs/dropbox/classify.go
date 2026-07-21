@@ -105,6 +105,16 @@ func apiErrRetryAfter(apiErr *APIError) time.Duration {
 	return 0
 }
 
+func (d *DropboxFS) throttleBackoff(apiErr *APIError) time.Duration {
+	if ra := apiErrRetryAfter(apiErr); ra > 0 {
+		return ra + types.ThrottleBackoffJitter
+	}
+	if d.session.degradation != nil {
+		return d.session.degradation.ScheduleThrottleBackoff()
+	}
+	return time.Second + types.ThrottleBackoffJitter
+}
+
 func (d *DropboxFS) classifyError(err error) types.FSErrorClassification {
 	class := ClassifyDropboxError(err)
 	if class.Bucket != types.FSErrorThrottle {
@@ -112,9 +122,9 @@ func (d *DropboxFS) classifyError(err error) types.FSErrorClassification {
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		if ra := apiErrRetryAfter(apiErr); ra > 0 {
-			class.RetryAfter = ra + types.ThrottleBackoffJitter
-		}
+		class.RetryAfter = d.throttleBackoff(apiErr)
+	} else if class.RetryAfter <= 0 {
+		class.RetryAfter = d.throttleBackoff(nil)
 	}
 	return class
 }
@@ -126,7 +136,7 @@ func (d *DropboxFS) withClassifiedRetry(ctx context.Context, operation string, o
 	return credentials.DoWithClassifiedRetry(ctx, credentials.ClassifiedRetryConfig{
 		RetryConfig: credentials.RetryConfig{
 			MaxIterations:         8,
-			MaxRateLimitWaits:     0,
+			MaxRateLimitWaits:     0, // exhaust immediately; ME WaitRateLimited owns the window
 			MaxRateLimitSleep:     types.MaxThrottleBackoff,
 			DefaultRateLimitSleep: time.Second + types.ThrottleBackoffJitter,
 			IsAuthFailure: func(err error) bool {
@@ -145,15 +155,12 @@ func (d *DropboxFS) withClassifiedRetry(ctx context.Context, operation string, o
 			},
 			OnRateLimitExhausted: func(err error) {
 				var apiErr *APIError
-				retry := time.Duration(0)
+				retry := time.Second + types.ThrottleBackoffJitter
 				if errors.As(err, &apiErr) {
-					if ra := apiErrRetryAfter(apiErr); ra > 0 {
-						retry = ra + types.ThrottleBackoffJitter
-					}
+					retry = d.throttleBackoff(apiErr)
 				}
-				if retry > 0 {
-					d.recordDegradation(types.FSDegradationRateLimit, operation, retry)
-				}
+				// Always record so ME AIMD + UI see RateLimitedUntil (even without Retry-After).
+				d.recordDegradation(types.FSDegradationRateLimit, operation, retry)
 			},
 		},
 		Operation:           operation,

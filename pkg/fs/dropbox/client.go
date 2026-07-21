@@ -61,23 +61,26 @@ type rateLimitError struct {
 	RetryAfter float64 `json:"retry_after"`
 }
 
-// Client performs Dropbox API v2 RPC and content calls for one namespace context.
+// Client performs Dropbox API v2 RPC and content calls for one namespace/member context.
 type Client struct {
-	httpClient *http.Client
-	pathRoot   string
+	httpClient  *http.Client
+	pathRoot    string // Dropbox-API-Path-Root namespace_id
+	selectUser  string // Dropbox-API-Select-User (team member id)
+	selectAdmin string // Dropbox-API-Select-Admin (team member id)
 }
 
-func newClient(httpClient *http.Client, pathRoot string) *Client {
-	return &Client{httpClient: httpClient, pathRoot: pathRoot}
+func newClient(httpClient *http.Client, pathRoot, selectUser string) *Client {
+	return &Client{httpClient: httpClient, pathRoot: pathRoot, selectUser: selectUser}
 }
 
-func (c *Client) withPathRoot(pathRoot string) *Client {
-	if pathRoot == c.pathRoot {
-		return c
+func (c *Client) withSelectAdmin(adminMemberID string) *Client {
+	if c == nil {
+		return nil
 	}
-	cp := *c
-	cp.pathRoot = pathRoot
-	return &cp
+	out := *c
+	out.selectAdmin = strings.TrimSpace(adminMemberID)
+	out.selectUser = ""
+	return &out
 }
 
 func (c *Client) rpc(ctx context.Context, endpoint string, reqBody any, respBody any) error {
@@ -156,6 +159,12 @@ func (c *Client) applyHeaders(req *http.Request) {
 		root := fmt.Sprintf(`{".tag":"namespace_id","namespace_id":%q}`, c.pathRoot)
 		req.Header.Set("Dropbox-API-Path-Root", root)
 	}
+	if c.selectUser != "" {
+		req.Header.Set("Dropbox-API-Select-User", c.selectUser)
+	}
+	if c.selectAdmin != "" {
+		req.Header.Set("Dropbox-API-Select-Admin", c.selectAdmin)
+	}
 }
 
 func parseAPIError(status int, raw []byte, header http.Header) *APIError {
@@ -182,22 +191,6 @@ func parseAPIError(status int, raw []byte, header http.Header) *APIError {
 	return err
 }
 
-func isForbidden(err error) bool {
-	var apiErr *APIError
-	return err != nil && errAs(err, &apiErr) && apiErr.Status == http.StatusForbidden
-}
-
-func errAs(err error, target **APIError) bool {
-	if err == nil {
-		return false
-	}
-	if apiErr, ok := err.(*APIError); ok {
-		*target = apiErr
-		return true
-	}
-	return false
-}
-
 type accountRootInfo struct {
 	Tag              string `json:".tag"`
 	RootNamespaceID  string `json:"root_namespace_id"`
@@ -205,7 +198,8 @@ type accountRootInfo struct {
 }
 
 type currentAccount struct {
-	Name struct {
+	Email string `json:"email"`
+	Name  struct {
 		DisplayName string `json:"display_name"`
 	} `json:"name"`
 	RootInfo accountRootInfo `json:"root_info"`
@@ -215,6 +209,35 @@ func (c *Client) getCurrentAccount(ctx context.Context) (currentAccount, error) 
 	var out currentAccount
 	err := c.rpc(ctx, "users/get_current_account", nil, &out)
 	return out, err
+}
+
+type authenticatedAdminResult struct {
+	AdminProfile struct {
+		TeamMemberID string `json:"team_member_id"`
+		Email        string `json:"email"`
+		Name         struct {
+			DisplayName string `json:"display_name"`
+		} `json:"name"`
+	} `json:"admin_profile"`
+}
+
+// getAuthenticatedAdmin resolves the admin member for a Business team-linked token.
+// Must be called without Select-User / Select-Admin headers.
+func (c *Client) getAuthenticatedAdmin(ctx context.Context) (authenticatedAdminResult, error) {
+	base := &Client{httpClient: c.httpClient}
+	var out authenticatedAdminResult
+	err := base.rpc(ctx, "team/token/get_authenticated_admin", nil, &out)
+	return out, err
+}
+
+func isTeamLinkedTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "entire dropbox business team") ||
+		strings.Contains(msg, "team-linked") ||
+		strings.Contains(msg, "dropbox business team")
 }
 
 type listFolderArg struct {
@@ -229,14 +252,15 @@ type metadataTag struct {
 }
 
 type fileMetadata struct {
-	Tag         string `json:".tag"`
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	PathDisplay string `json:"path_display"`
-	PathLower   string `json:"path_lower"`
-	Size        uint64 `json:"size"`
-	ClientMod   string `json:"client_modified"`
-	ServerMod   string `json:"server_modified"`
+	Tag            string `json:".tag"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	PathDisplay    string `json:"path_display"`
+	PathLower      string `json:"path_lower"`
+	Size           uint64 `json:"size"`
+	ClientMod      string `json:"client_modified"`
+	ServerMod      string `json:"server_modified"`
+	SharedFolderID string `json:"shared_folder_id"`
 }
 
 type listFolderResult struct {
@@ -381,7 +405,7 @@ func (c *Client) upload(ctx context.Context, path string, body io.Reader) (fileM
 	return meta, err
 }
 
-const uploadSessionChunk = 8 * 1024 * 1024
+const uploadSessionChunk = 16 * 1024 * 1024
 
 func (c *Client) uploadSession(ctx context.Context, path string, body io.Reader) (fileMetadata, error) {
 	var startResp struct {
@@ -390,33 +414,9 @@ func (c *Client) uploadSession(ctx context.Context, path string, body io.Reader)
 	if _, err := c.content(ctx, "files/upload_session/start", struct{}{}, nil, &startResp); err != nil {
 		return fileMetadata{}, err
 	}
-	offset := uint64(0)
-	buf := make([]byte, uploadSessionChunk)
-	for {
-		n, readErr := io.ReadFull(body, buf)
-		if readErr == io.ErrUnexpectedEOF {
-			readErr = io.EOF
-		}
-		if n > 0 {
-			chunk := buf[:n]
-			appendArg := map[string]any{
-				"cursor": map[string]any{
-					"session_id": startResp.SessionID,
-					"offset":     offset,
-				},
-				"close": readErr == io.EOF,
-			}
-			if _, err := c.content(ctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(chunk), nil); err != nil {
-				return fileMetadata{}, err
-			}
-			offset += uint64(n)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fileMetadata{}, readErr
-		}
+	offset, err := c.appendUploadSession(ctx, startResp.SessionID, body)
+	if err != nil {
+		return fileMetadata{}, err
 	}
 	var finishResp struct {
 		Metadata fileMetadata `json:"metadata"`
@@ -437,6 +437,57 @@ func (c *Client) uploadSession(ctx context.Context, path string, body io.Reader)
 		return fileMetadata{}, err
 	}
 	return finishResp.Metadata, nil
+}
+
+// appendUploadSession streams body into an open upload session and closes it on the last chunk.
+// Empty bodies still send append_v2 with close=true so the session is finish-ready at offset 0.
+func (c *Client) appendUploadSession(ctx context.Context, sessionID string, body io.Reader) (uint64, error) {
+	offset := uint64(0)
+	buf := make([]byte, uploadSessionChunk)
+	closed := false
+	for {
+		n, readErr := io.ReadFull(body, buf)
+		if readErr == io.ErrUnexpectedEOF {
+			readErr = io.EOF
+		}
+		atEOF := readErr == io.EOF
+		if n > 0 {
+			chunk := buf[:n]
+			appendArg := map[string]any{
+				"cursor": map[string]any{
+					"session_id": sessionID,
+					"offset":     offset,
+				},
+				"close": atEOF,
+			}
+			if _, err := c.content(ctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(chunk), nil); err != nil {
+				return 0, err
+			}
+			offset += uint64(n)
+			if atEOF {
+				closed = true
+			}
+		}
+		if atEOF {
+			break
+		}
+		if readErr != nil {
+			return 0, readErr
+		}
+	}
+	if !closed {
+		appendArg := map[string]any{
+			"cursor": map[string]any{
+				"session_id": sessionID,
+				"offset":     offset,
+			},
+			"close": true,
+		}
+		if _, err := c.content(ctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(nil), nil); err != nil {
+			return 0, err
+		}
+	}
+	return offset, nil
 }
 
 type teamFolderMetadata struct {
@@ -514,24 +565,15 @@ func (c *Client) listSharedFolders(ctx context.Context) ([]sharedFolderMetadata,
 	return all, nil
 }
 
-type teamFolderInfoResult struct {
-	TeamFolder struct {
-		TeamFolderID string `json:"team_folder_id"`
-		Name         string `json:"name"`
-	} `json:"team_folder"`
-	NamespaceID string `json:"namespace_id"`
-}
 
-func (c *Client) teamFolderNamespace(ctx context.Context, teamFolderID string) (string, error) {
-	var resp teamFolderInfoResult
-	err := c.rpc(ctx, "team/team_folder/get_info", map[string]string{"team_folder_id": teamFolderID}, &resp)
-	if err != nil {
-		return "", err
+// teamFolderNamespace returns the namespace id for Path-Root. For Dropbox team folders,
+// team_folder_id is the shared-folder / namespace id.
+func (c *Client) teamFolderNamespace(_ context.Context, teamFolderID string) (string, error) {
+	id := strings.TrimSpace(teamFolderID)
+	if id == "" {
+		return "", fmt.Errorf("dropbox: empty team folder id")
 	}
-	if resp.NamespaceID != "" {
-		return resp.NamespaceID, nil
-	}
-	return "", fmt.Errorf("dropbox: no namespace_id for team folder %s", teamFolderID)
+	return id, nil
 }
 
 func dropboxPathRef(idOrPath string) string {
@@ -563,40 +605,6 @@ func (c *Client) getMetadata(ctx context.Context, pathRef string) (fileMetadata,
 		"include_has_explicit_shared_members": false,
 	}, &meta)
 	return meta, err
-}
-
-// resolveCreatePath returns the Dropbox path for a new file or folder.
-// sharedRootPath is a path-prefix root (e.g. shared-folder mount) when listing under a non-home root.
-func (c *Client) resolveCreatePath(ctx context.Context, parentID, name, sharedRootPath string) (string, error) {
-	parentID = strings.TrimSpace(parentID)
-	if isDropboxRootRef(parentID) {
-		if sharedRootPath != "" && strings.HasPrefix(sharedRootPath, "/") {
-			if sharedRootPath == "/" {
-				return "/" + name, nil
-			}
-			return sharedRootPath + "/" + name, nil
-		}
-		return "/" + name, nil
-	}
-	ref := dropboxPathRef(parentID)
-	if strings.HasPrefix(ref, "/") {
-		if ref == "/" {
-			return "/" + name, nil
-		}
-		return ref + "/" + name, nil
-	}
-	meta, err := c.getMetadata(ctx, ref)
-	if err != nil {
-		return "", err
-	}
-	base := meta.PathLower
-	if base == "" {
-		base = meta.PathDisplay
-	}
-	if base == "" {
-		return "/" + name, nil
-	}
-	return base + "/" + name, nil
 }
 
 func parentPathForCreate(parentID, name string) string {

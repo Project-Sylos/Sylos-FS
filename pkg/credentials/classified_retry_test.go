@@ -4,6 +4,7 @@
 package credentials
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"syscall"
@@ -125,5 +126,64 @@ func TestDoWithClassifiedRetryExplicitThrottleSeparateFromGeneric(t *testing.T) 
 	}
 	if rateWaits != 1 {
 		t.Fatalf("rateWaits=%d want 1 (generic retry must not inflate throttle path)", rateWaits)
+	}
+}
+
+func TestDoWithClassifiedRetryAuthRefreshBeforeFatal(t *testing.T) {
+	var calls, refreshes int
+	authErr := errors.New("unauthorized")
+	err := DoWithClassifiedRetry(t.Context(), ClassifiedRetryConfig{
+		Classify: func(err error) types.FSErrorClassification {
+			return types.FSErrorClassification{Bucket: types.FSErrorFatal, ErrorCode: "auth"}
+		},
+		RetryConfig: RetryConfig{
+			IsAuthFailure: func(err error) bool { return errors.Is(err, authErr) },
+			Refresh: func(context.Context) error {
+				refreshes++
+				return nil
+			},
+		},
+	}, func() error {
+		calls++
+		if calls == 1 {
+			return authErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d want 2", calls)
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes=%d want 1", refreshes)
+	}
+}
+
+func TestDoWithClassifiedRetryMaxRateLimitWaitsZeroExhaustsImmediately(t *testing.T) {
+	var exhausted, waits int
+	err := DoWithClassifiedRetry(t.Context(), ClassifiedRetryConfig{
+		Classify: func(err error) types.FSErrorClassification {
+			return types.FSErrorClassification{Bucket: types.FSErrorThrottle, RetryAfter: time.Second}
+		},
+		RetryConfig: RetryConfig{
+			MaxRateLimitWaits: 0,
+			OnRateLimitWait:   func(time.Duration, int) { waits++ },
+			OnRateLimitExhausted: func(error) {
+				exhausted++
+			},
+		},
+	}, func() error {
+		return errors.New("429")
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if waits != 0 {
+		t.Fatalf("waits=%d want 0 (no FS-layer sleep)", waits)
+	}
+	if exhausted != 1 {
+		t.Fatalf("exhausted=%d want 1", exhausted)
 	}
 }

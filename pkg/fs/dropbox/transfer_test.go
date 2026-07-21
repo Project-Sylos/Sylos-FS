@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/cloud"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 func TestPendingFileIDRootParent(t *testing.T) {
@@ -82,5 +83,47 @@ func TestResolveLocationPathSharedRoot(t *testing.T) {
 	got := d.resolveLocationPath("/notes/file.txt")
 	if got != "/shared/docs/notes/file.txt" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveLocationPathNestedMigrationRoot(t *testing.T) {
+	d := &DropboxFS{
+		ctx: dropboxContext{
+			RootType: cloud.RootTypeUserRoot,
+			RootPath: "/extra/folder",
+		},
+	}
+	if got := d.resolveLocationPath("/2"); got != "/extra/folder/2" {
+		t.Fatalf("got %q", got)
+	}
+	if got := d.resolveLocationPath("/"); got != "/extra/folder" {
+		t.Fatalf("root loc=%q", got)
+	}
+}
+
+func TestCreateAPIPathRequiresLocationOrRoot(t *testing.T) {
+	d := &DropboxFS{
+		ctx:  dropboxContext{RootType: cloud.RootTypeUserRoot, RootPath: "/extra/folder"},
+		root: types.Folder{ServiceID: "id:rootfolder", LocationPath: "/"},
+	}
+	got, err := d.createAPIPath("id:parent", "child", map[string]string{
+		"location_path": "/2/child",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/extra/folder/2/child" {
+		t.Fatalf("got %q", got)
+	}
+	got, err = d.createAPIPath("root", "top", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/extra/folder/top" {
+		t.Fatalf("root create=%q", got)
+	}
+	_, err = d.createAPIPath("id:only", "x", nil)
+	if err == nil {
+		t.Fatal("expected fatal error for id-only create")
 	}
 }

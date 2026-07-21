@@ -58,7 +58,9 @@ type RetryConfig struct {
 	// min(retryAfter, MaxRateLimitSleep) before retrying op. If nil, rate limits are not handled.
 	IsRateLimited func(err error) (retryAfter time.Duration, ok bool)
 
-	// MaxRateLimitWaits is how many consecutive rate-limit sleeps to perform (default 10).
+	// MaxRateLimitWaits is how many consecutive rate-limit sleeps to perform inside the
+	// retry loop. Zero means exhaust immediately (no FS-layer sleeps; ME/workers own
+	// RateLimitedUntil waits). Negative means unset → default 10.
 	MaxRateLimitWaits int
 
 	// MaxRateLimitSleep caps sleep duration when retryAfter is positive (default 60s).
@@ -143,7 +145,7 @@ func DoWithAuthRetry(ctx context.Context, cfg RetryConfig, op func() error) erro
 }
 
 func normalizeRetryConfig(cfg RetryConfig) RetryConfig {
-	if cfg.MaxRateLimitWaits <= 0 {
+	if cfg.MaxRateLimitWaits < 0 {
 		cfg.MaxRateLimitWaits = 10
 	}
 	if cfg.MaxRateLimitSleep <= 0 {

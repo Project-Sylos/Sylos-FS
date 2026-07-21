@@ -21,3 +21,12 @@ func TestStoredCredentialsFromOAuthGoogleDrive(t *testing.T) {
 		t.Fatalf("TokenURI=%q", stored.TokenURI)
 	}
 }
+
+func TestStoredCredentialsFromOAuthMicrosoft(t *testing.T) {
+	for _, provider := range []string{ProviderOneDrive, ProviderSharePoint} {
+		stored := StoredCredentialsFromOAuth(provider, "refresh", "cid", "secret", nil)
+		if stored.TokenURI != "https://login.microsoftonline.com/common/oauth2/v2.0/token" {
+			t.Fatalf("%s TokenURI=%q", provider, stored.TokenURI)
+		}
+	}
+}

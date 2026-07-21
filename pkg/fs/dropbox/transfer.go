@@ -96,6 +96,7 @@ func (w *dropboxWriter) CommittedServiceID() string {
 }
 
 func (w *dropboxWriter) resolveUploadPath(client *Client) (string, error) {
+	_ = client
 	if !w.create {
 		return dropboxPathRef(w.fileID), nil
 	}
@@ -105,8 +106,11 @@ func (w *dropboxWriter) resolveUploadPath(client *Client) (string, error) {
 	if err := w.dfs.errTeamSpaceRootWrite(); err != nil && isDropboxRootRef(w.parentID) {
 		return "", err
 	}
-	parentID := w.dfs.normalizeParentForCreate(w.parentID)
-	return client.resolveCreatePath(w.ctx, parentID, w.fileName, w.dfs.sharedRootPath())
+	apiPath, err := w.dfs.createAPIPath(w.parentID, w.fileName, nil)
+	if err != nil {
+		return "", fmt.Errorf("dropbox: upload create requires location_path (or root parent): %w", err)
+	}
+	return apiPath, nil
 }
 
 func (w *dropboxWriter) Write(p []byte) (int, error) {

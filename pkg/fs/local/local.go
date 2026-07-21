@@ -375,6 +375,40 @@ func (l *LocalFS) openWriteOnce(ctx context.Context, fileID string) (io.WriteClo
 	return ctxstream.NewWriteCloser(ctx, file), nil
 }
 
+// SupportsResumableTransfer implements types.FSTransferRestartPolicy: local files can seek.
+func (l *LocalFS) SupportsResumableTransfer() bool { return true }
+
+// RequiresDeleteBeforeRestart implements types.FSTransferRestartPolicy: overwrite/seek is safe.
+func (l *LocalFS) RequiresDeleteBeforeRestart() bool { return false }
+
+// OpenWriteFromOffset opens an existing file and seeks to offset (fresh handle, no session handoff).
+func (l *LocalFS) OpenWriteFromOffset(ctx context.Context, fileID string, offset int64) (io.WriteCloser, error) {
+	if offset <= 0 {
+		return l.OpenWrite(ctx, fileID)
+	}
+	var wc io.WriteCloser
+	err := l.withClassifiedRetryCtx(ctx, "OpenWriteFromOffset", func() error {
+		fi, err := os.Lstat(fileID)
+		if err != nil {
+			return err
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("%w: %s", ErrNotRegularFile, fileID)
+		}
+		file, err := os.OpenFile(fileID, os.O_RDWR, 0644)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
+			_ = file.Close()
+			return err
+		}
+		wc = ctxstream.NewWriteCloser(ctx, file)
+		return nil
+	})
+	return wc, err
+}
+
 // NormalizePath cleans and normalizes any incoming path string.
 func (l *LocalFS) NormalizePath(path string) string {
 	p := filepath.Clean(path)
@@ -451,3 +485,9 @@ func (l *LocalFS) ListChildrenPagination() types.ListChildrenPagination {
 		PreferLargePagesUnderThrottle: false,
 	}
 }
+
+var (
+	_ types.FSAdapter               = (*LocalFS)(nil)
+	_ types.FSTransferRestartPolicy = (*LocalFS)(nil)
+	_ types.FSResumableWrite        = (*LocalFS)(nil)
+)

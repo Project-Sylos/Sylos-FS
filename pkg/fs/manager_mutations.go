@@ -223,6 +223,9 @@ func (m *ServiceManager) cloudBrowseAdapter(connectionID, contextID, rootType, d
 	if strings.TrimSpace(contextID) == "" {
 		return nil, fmt.Errorf("browse context id is required")
 	}
+	if rootType == "" && contextID == "sharedWithMe" {
+		rootType = cloud.RootTypeSharedWithMe
+	}
 	var folder types.Folder
 	var err error
 	if rootType != "" {

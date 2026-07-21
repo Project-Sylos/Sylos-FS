@@ -12,7 +12,7 @@ import (
 func (s *SpectraFS) getNodeWithRetry(ctx context.Context, id string) (*sdk.Node, error) {
 	var node *sdk.Node
 	err := s.withClassifiedRetry(ctx, "GetNode", func() error {
-		n, callErr := s.fs.GetNode(&sdk.GetNodeRequest{ID: id})
+		n, callErr := s.fs.GetNode(&sdk.GetNodeRequest{ID: id, TableName: s.world})
 		if callErr != nil {
 			return callErr
 		}

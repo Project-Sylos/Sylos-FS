@@ -77,11 +77,11 @@ func BrowseFolder(identifier, rootType, driveID string) (types.Folder, error) {
 		if ns == "" {
 			ns = identifier
 		}
-		if ns == "" || ns == "root" {
+		if ns == "" || ns == "root" || ns == "teamSpace" {
 			return types.Folder{}, fmt.Errorf("cloud browse: driveId (namespace id) is required for team_space")
 		}
 		return types.Folder{
-			ServiceID:    "root",
+			ServiceID:    "teamSpace",
 			ParentId:     ns,
 			DisplayName:  "Team space",
 			LocationPath: "/",
@@ -107,12 +107,40 @@ func BrowseFolder(identifier, rootType, driveID string) (types.Folder, error) {
 			return types.Folder{}, fmt.Errorf("cloud browse: identifier (shared folder id) is required for shared_folder")
 		}
 		ns := driveID
+		if ns == "" {
+			ns = identifier
+		}
 		return types.Folder{
 			ServiceID:    identifier,
 			ParentId:     ns,
 			DisplayName:  identifier,
 			LocationPath: "/",
 			Type:         RootTypeSharedFolder,
+		}, nil
+	case RootTypeSharePointSite:
+		if identifier == "" {
+			return types.Folder{}, fmt.Errorf("cloud browse: identifier (site id) is required for sharepoint_site")
+		}
+		return types.Folder{
+			ServiceID:    identifier,
+			DisplayName:  identifier,
+			LocationPath: "/",
+			Type:         RootTypeSharePointSite,
+		}, nil
+	case RootTypeSharePointDrive:
+		if identifier == "" {
+			return types.Folder{}, fmt.Errorf("cloud browse: identifier (drive id) is required for sharepoint_drive")
+		}
+		ns := driveID
+		if ns == "" {
+			ns = identifier
+		}
+		return types.Folder{
+			ServiceID:    "root",
+			ParentId:     ns,
+			DisplayName:  identifier,
+			LocationPath: "/",
+			Type:         RootTypeSharePointDrive,
 		}, nil
 	default:
 		return types.Folder{}, fmt.Errorf("cloud browse: unknown rootType %q", rootType)

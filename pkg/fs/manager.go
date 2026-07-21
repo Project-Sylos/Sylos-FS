@@ -784,6 +784,22 @@ func (m *ServiceManager) AcquireAdapter(def serviceDefinition, root types.Folder
 	return m.AcquireAdapterWithOverride(def, root, connectionID, "")
 }
 
+// ValidateMigrationRoot applies provider-owned migration-root policy without
+// opening an adapter. Browse-only virtual containers remain usable for listing.
+func (m *ServiceManager) ValidateMigrationRoot(serviceID string, root types.Folder) error {
+	def, err := m.GetServiceDefinition(serviceID)
+	if err != nil {
+		return err
+	}
+	if def.Type != types.ServiceTypeCloud {
+		return nil
+	}
+	if def.Cloud == nil {
+		return fmt.Errorf("cloud configuration missing")
+	}
+	return cloud.ValidateMigrationRootFolder(def.Cloud.ProviderID, root)
+}
+
 // AcquireAdapterWithOverride acquires an adapter, with optional Spectra config override path
 func (m *ServiceManager) AcquireAdapterWithOverride(def serviceDefinition, root types.Folder, connectionID, spectraConfigOverridePath string) (types.FSAdapter, func(), error) {
 	switch def.Type {

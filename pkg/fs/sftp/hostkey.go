@@ -58,3 +58,16 @@ func FetchServerHostKey(host string, port int) (HostKeyProbeResult, error) {
 		Fingerprint: ssh.FingerprintSHA256(captured),
 	}, nil
 }
+
+// FingerprintHostKey returns the OpenSSH SHA256 fingerprint for a base64-encoded host key.
+func FingerprintHostKey(hostKeyB64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(hostKeyB64))
+	if err != nil {
+		return "", fmt.Errorf("sftp host key fingerprint: %w", err)
+	}
+	pubKey, err := ssh.ParsePublicKey(raw)
+	if err != nil {
+		return "", fmt.Errorf("sftp host key fingerprint: %w", err)
+	}
+	return ssh.FingerprintSHA256(pubKey), nil
+}

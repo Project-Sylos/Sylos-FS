@@ -41,6 +41,14 @@ func TestClassifySpectraErrorAuthFatal(t *testing.T) {
 	}
 }
 
+func TestClassifySpectraErrorUnauthorized(t *testing.T) {
+	class := ClassifySpectraError(&sdk.UnauthorizedError{World: "primary", Reason: "expired"})
+	if class.Bucket != types.FSErrorFatal || class.ErrorCode != "auth" {
+		t.Fatalf("got %+v", class)
+	}
+}
+
+
 func TestClassifySpectraErrorRetryableTransient(t *testing.T) {
 	class := ClassifySpectraError(errors.New("temporary timeout"))
 	if class.Bucket != types.FSErrorRetryable {

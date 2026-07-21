@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/cloud"
@@ -15,13 +16,16 @@ import (
 
 // CloudConnectionOptions configures a new cloud connection registration.
 type CloudConnectionOptions struct {
-	ProviderID     string
-	ConnectionID   string
-	MigrationDir   string
-	MasterKey      []byte
+	ProviderID      string
+	ConnectionID    string
+	MigrationDir    string
+	MasterKey       []byte
 	CredentialsJSON []byte // StoredCredentials JSON plaintext before encryption
-	AccessToken    string
-	ExpiresInSec   int64
+	AccessToken     string
+	ExpiresInSec    int64
+	// PersistCredentials is invoked when a provider rotates refresh tokens in-session
+	// (required for Box single-use refresh tokens).
+	PersistCredentials func(cloud.StoredCredentials) error
 }
 
 func (m *ServiceManager) loadCloudServices(cloudServices []types.CloudServiceConfig) error {
@@ -78,6 +82,11 @@ func (m *ServiceManager) RegisterCloudConnection(opts CloudConnectionOptions) (s
 	if err != nil {
 		return "", err
 	}
+	if opts.PersistCredentials != nil {
+		if persister, ok := session.(cloud.CredentialsPersister); ok {
+			persister.SetCredentialsPersist(opts.PersistCredentials)
+		}
+	}
 	if opts.AccessToken != "" {
 		if primable, ok := session.(interface {
 			PrimeAccessToken(string, int64)
@@ -105,6 +114,39 @@ func (m *ServiceManager) RegisterCloudConnection(opts CloudConnectionOptions) (s
 	return opts.ConnectionID, nil
 }
 
+// ExportCloudCredentialsJSON returns StoredCredentials JSON for a live cloud connection.
+// Used by the API to persist OAuth/SFTP credentials into the migration DB after SetRoot.
+func (m *ServiceManager) ExportCloudCredentialsJSON(connectionID string) ([]byte, error) {
+	conn, exists := m.getConnection(connectionID)
+	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
+		return nil, fmt.Errorf("cloud connection %s not found", connectionID)
+	}
+	exporter, ok := conn.cloud.(cloud.CredentialsExporter)
+	if !ok {
+		return nil, fmt.Errorf("cloud connection %s does not export stored credentials", connectionID)
+	}
+	stored, err := exporter.ExportStoredCredentials()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(stored)
+}
+
+// SetCloudCredentialsPersist wires a callback for in-session refresh-token rotation
+// (e.g. Box). No-op when the session does not implement CredentialsPersister.
+func (m *ServiceManager) SetCloudCredentialsPersist(connectionID string, fn func(cloud.StoredCredentials) error) error {
+	conn, exists := m.getConnection(connectionID)
+	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
+		return fmt.Errorf("cloud connection %s not found", connectionID)
+	}
+	persister, ok := conn.cloud.(cloud.CredentialsPersister)
+	if !ok {
+		return nil
+	}
+	persister.SetCredentialsPersist(fn)
+	return nil
+}
+
 // ListCloudRoots returns provider-specific browse roots for a connection.
 func (m *ServiceManager) ListCloudRoots(ctx context.Context, providerID, connectionID string) ([]cloud.Root, error) {
 	conn, exists := m.getConnection(connectionID)
@@ -118,23 +160,79 @@ func (m *ServiceManager) ListCloudRoots(ctx context.Context, providerID, connect
 	if err != nil {
 		return nil, err
 	}
-	return factory.ListRoots(ctx, conn.cloud)
+	roots, err := factory.ListRoots(ctx, conn.cloud)
+	if err != nil {
+		return nil, err
+	}
+	forbidden := make(map[string]struct{}, len(factory.ForbiddenMigrationRootIDs()))
+	for _, id := range factory.ForbiddenMigrationRootIDs() {
+		forbidden[id] = struct{}{}
+	}
+	for i := range roots {
+		if roots[i].RootType == cloud.RootTypeSharePointSite {
+			roots[i].MigrationRootForbidden = true
+			if roots[i].MigrationRootForbiddenReason == "" {
+				roots[i].MigrationRootForbiddenReason = "This virtual location cannot be used as a migration root. Select a folder inside it."
+			}
+		}
+		if _, isForbidden := forbidden[roots[i].ID]; !isForbidden {
+			continue
+		}
+		roots[i].MigrationRootForbidden = true
+		roots[i].MigrationRootForbiddenReason = "This virtual location cannot be used as a migration root. Select a folder inside it."
+	}
+	return roots, nil
+}
+
+// CloudAccountIdentity returns the signed-in account for a cloud connection, when available.
+func (m *ServiceManager) CloudAccountIdentity(ctx context.Context, connectionID string) (cloud.AccountIdentity, error) {
+	conn, exists := m.getConnection(connectionID)
+	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
+		return cloud.AccountIdentity{}, fmt.Errorf("cloud connection %s not found", connectionID)
+	}
+	resolver, ok := conn.cloud.(cloud.AccountResolver)
+	if !ok {
+		return cloud.AccountIdentity{}, nil
+	}
+	return resolver.ResolveAccountIdentity(ctx)
 }
 
 // ListCloudChildren lists children for a cloud connection before migration root is set.
 // rootType should match the cloud.RootType from GET .../roots when listing a virtual root.
-// driveID is namespace metadata from /roots (Dropbox team_folder, shared_folder).
+// driveID is namespace metadata from /roots (Dropbox team_folder, shared_folder, team_space).
+// For nested folders under a namespaced root, callers should keep passing driveId (and rootType)
+// so Path-Root / namespace context is preserved.
 func (m *ServiceManager) ListCloudChildren(ctx context.Context, connectionID, identifier, rootType, driveID string, offset, limit int, foldersOnly bool) (types.ListResult, types.PaginationInfo, error) {
 	conn, exists := m.getConnection(connectionID)
 	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
 		return types.ListResult{}, types.PaginationInfo{}, fmt.Errorf("cloud connection %s not found", connectionID)
 	}
+	// Defense in depth: Shared with me is a virtual sentinel, not a Drive file id.
+	// Callers should pass rootType=shared_with_me; infer it when they forget.
+	if rootType == "" && identifier == "sharedWithMe" {
+		rootType = cloud.RootTypeSharedWithMe
+	}
 	var folder types.Folder
 	var err error
-	if rootType != "" {
+	if cloud.IsVirtualRootListing(identifier, rootType) {
 		folder, err = cloud.BrowseRoot(cloud.Root{ID: identifier, RootType: rootType, DriveID: driveID})
 	} else {
 		folder, err = cloud.BrowseFolder(identifier, "", driveID)
+		if err == nil && driveID != "" {
+			// Preserve active-root namespace/path context for nested listings.
+			if folder.ParentId == "" {
+				folder.ParentId = driveID
+			}
+			if folder.Type == "" || folder.Type == types.NodeTypeFolder {
+				if strings.HasPrefix(driveID, "/") {
+					folder.Type = cloud.RootTypeSharedFolder
+				} else {
+					// Namespace Path-Root (team space / team folder / shared folder id).
+					// Graph drive ids also land here; adapters key off ParentId as drive id.
+					folder.Type = cloud.RootTypeTeamFolder
+				}
+			}
+		}
 	}
 	if err != nil {
 		return types.ListResult{}, types.PaginationInfo{}, err
@@ -165,6 +263,9 @@ func (m *ServiceManager) RevokeCloudConnection(connectionID, migrationDir string
 func (m *ServiceManager) acquireCloudAdapter(def serviceDefinition, root types.Folder, connectionID string) (types.FSAdapter, func(), error) {
 	if def.Cloud == nil {
 		return nil, nil, fmt.Errorf("cloud configuration missing")
+	}
+	if err := cloud.ValidateMigrationRoot(def.Cloud.ProviderID, root.ServiceID); err != nil {
+		return nil, nil, err
 	}
 	conn, err := m.incrementConnectionRefCount(connectionID)
 	if err != nil {

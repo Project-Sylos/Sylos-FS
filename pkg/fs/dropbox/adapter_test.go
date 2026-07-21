@@ -40,6 +40,19 @@ func TestListPathSharedFolderRootUsesPath(t *testing.T) {
 	}
 }
 
+func TestSharedRootPathPrefersRootPathOverFolderRef(t *testing.T) {
+	d := &DropboxFS{
+		ctx: dropboxContext{
+			RootType:  cloud.RootTypeUserRoot,
+			RootPath:  "/extra/folder",
+			FolderRef: "id:should-not-win",
+		},
+	}
+	if got := d.sharedRootPath(); got != "/extra/folder" {
+		t.Fatalf("sharedRootPath=%q", got)
+	}
+}
+
 func TestDropboxPathRef(t *testing.T) {
 	if got := dropboxPathRef("abc"); got != "id:abc" {
 		t.Fatalf("got %q", got)
@@ -86,11 +99,37 @@ func TestPathRootForAPIUserRootOmitsNamespaceHeader(t *testing.T) {
 	}
 }
 
-func TestPathRootForAPITeamFolderUsesNamespace(t *testing.T) {
+func TestPathRootForAPISharedFolderNamespace(t *testing.T) {
 	d := &DropboxFS{
-		ctx: dropboxContext{RootType: cloud.RootTypeTeamFolder, NamespaceID: "ns-team"},
+		ctx: dropboxContext{RootType: cloud.RootTypeSharedFolder, NamespaceID: "sf-ns"},
 	}
-	if got := d.pathRootForAPI(); got != "ns-team" {
-		t.Fatalf("pathRootForAPI()=%q want ns-team", got)
+	if got := d.pathRootForAPI(); got != "sf-ns" {
+		t.Fatalf("pathRootForAPI()=%q want sf-ns", got)
+	}
+}
+
+func TestListPathSharedFolderNamespaceRoot(t *testing.T) {
+	d := &DropboxFS{
+		ctx: dropboxContext{
+			RootType:    cloud.RootTypeSharedFolder,
+			NamespaceID: "sf-ns",
+		},
+		root: types.Folder{ServiceID: "sf-ns", LocationPath: "/"},
+	}
+	if got := d.listPath("sf-ns"); got != "" {
+		t.Fatalf("listPath(sf-ns)=%q want empty", got)
+	}
+}
+
+func TestMetaToFolderSharedFolderUsesNamespaceID(t *testing.T) {
+	d := &DropboxFS{}
+	f := d.metaToFolder(fileMetadata{
+		Tag:            "folder",
+		ID:             "id:fileabc",
+		Name:           "Team Docs",
+		SharedFolderID: "99",
+	}, "/")
+	if f.ServiceID != "99" || f.ParentId != "99" || f.Type != types.NodeTypeFolder {
+		t.Fatalf("got %+v", f)
 	}
 }

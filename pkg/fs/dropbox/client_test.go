@@ -60,11 +60,18 @@ func (t localDropboxRPCTransport) RoundTrip(req *http.Request) (*http.Response, 
 
 func TestUploadSessionFinishUsesContentHost(t *testing.T) {
 	var finishHost string
+	var sawAppendClose bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/files/upload_session/start"):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"session_id":"sess-1"}`))
+		case strings.HasSuffix(r.URL.Path, "/files/upload_session/append_v2"):
+			arg := r.Header.Get("Dropbox-API-Arg")
+			if strings.Contains(arg, `"close":true`) {
+				sawAppendClose = true
+			}
+			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(r.URL.Path, "/files/upload_session/finish"):
 			finishHost = r.Host
 			w.Header().Set("Content-Type", "application/json")
@@ -83,6 +90,9 @@ func TestUploadSessionFinishUsesContentHost(t *testing.T) {
 	_, err := c.uploadSession(context.Background(), "/a.txt", strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("uploadSession: %v", err)
+	}
+	if !sawAppendClose {
+		t.Fatal("expected empty-body append_v2 with close=true")
 	}
 	if finishHost == "" {
 		t.Fatal("finish request was not observed")

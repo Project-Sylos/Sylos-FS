@@ -62,6 +62,12 @@ func NewSpectraFS(spectraFS *sdk.SpectraFS, rootID string, world string, isEphem
 		s.degradation = types.NewFSDegradationState()
 	}
 
+	if spectraFS.AuthEnabled() {
+		if _, err := spectraFS.EnsureWorldAuth(world); err != nil {
+			return nil, fmt.Errorf("ensure auth for world %s: %w", world, err)
+		}
+	}
+
 	return s, nil
 }
 
@@ -193,7 +199,7 @@ func (s *SpectraFS) NewChildrenPager(ctx context.Context, identifier string, pag
 func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
 	var fileData []byte
 	err := s.withClassifiedRetry(ctx, "GetFileData", func() error {
-		data, _, callErr := s.fs.GetFileData(fileID)
+		data, _, callErr := s.fs.GetFileData(fileID, s.world)
 		if callErr != nil {
 			return callErr
 		}
@@ -455,9 +461,15 @@ func (s *SpectraFS) RegisterCredentials(_ []byte, _ []byte, _ string) error {
 	return nil
 }
 
-// HasValidCredentials always returns true for SpectraFS.
+// HasValidCredentials reports whether auth credentials are bound when auth is enabled.
 func (s *SpectraFS) HasValidCredentials() bool {
-	return true
+	if s == nil || s.fs == nil {
+		return false
+	}
+	if !s.fs.AuthEnabled() {
+		return true
+	}
+	return s.fs.AuthEngine() != nil && s.fs.AuthEngine().HasPresentedToken(s.world)
 }
 
 // DegradationState implements types.FSDegradationReporter.

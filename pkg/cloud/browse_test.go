@@ -115,3 +115,74 @@ func TestBrowseRootSharedFolder(t *testing.T) {
 		t.Fatalf("got %+v", f)
 	}
 }
+
+func TestBrowseRootSharedFolderNamespaceFallback(t *testing.T) {
+	f, err := BrowseRoot(Root{
+		ID:       "sf-789",
+		RootType: RootTypeSharedFolder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ParentId != "sf-789" || f.ServiceID != "sf-789" {
+		t.Fatalf("expected shared folder id as namespace ParentId, got %+v", f)
+	}
+}
+
+func TestBrowseRootTeamSpace(t *testing.T) {
+	f, err := BrowseRoot(Root{
+		ID:       "teamSpace",
+		DriveID:  "ns-root",
+		RootType: RootTypeTeamSpace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ServiceID != "teamSpace" || f.ParentId != "ns-root" {
+		t.Fatalf("got %+v", f)
+	}
+}
+
+func TestIsVirtualRootListing(t *testing.T) {
+	if !IsVirtualRootListing("teamSpace", RootTypeTeamSpace) {
+		t.Fatal("teamSpace should be virtual")
+	}
+	if IsVirtualRootListing("id:abc", RootTypeTeamSpace) {
+		t.Fatal("nested team space child should not be virtual")
+	}
+	if !IsVirtualRootListing("sf-1", RootTypeSharedFolder) {
+		t.Fatal("shared folder root should be virtual when rootType set")
+	}
+	if IsVirtualRootListing("id:abc", "") {
+		t.Fatal("nested without rootType is not virtual")
+	}
+	if !IsVirtualRootListing("site-1", RootTypeSharePointSite) {
+		t.Fatal("sharepoint site should be virtual")
+	}
+	if !IsVirtualRootListing("drive-1", RootTypeSharePointDrive) {
+		t.Fatal("sharepoint drive should be virtual when rootType set")
+	}
+	if !IsVirtualRootListing("0", RootTypeMyDrive) {
+		t.Fatal("box All Files (id 0) should be virtual")
+	}
+}
+
+func TestBrowseFolderSharePointSite(t *testing.T) {
+	f, err := BrowseFolder("site-abc", RootTypeSharePointSite, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != RootTypeSharePointSite || f.ServiceID != "site-abc" {
+		t.Fatalf("got %+v", f)
+	}
+}
+
+func TestBrowseFolderSharePointDrive(t *testing.T) {
+	f, err := BrowseFolder("drive-1", RootTypeSharePointDrive, "drive-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != RootTypeSharePointDrive || f.ServiceID != "root" || f.ParentId != "drive-1" {
+		t.Fatalf("got %+v", f)
+	}
+}

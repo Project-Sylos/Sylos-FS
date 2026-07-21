@@ -25,6 +25,9 @@ func init() {
 type factory struct{}
 
 func (factory) ProviderID() string { return cloud.ProviderGoogleDrive }
+func (factory) ForbiddenMigrationRootIDs() []string {
+	return []string{"sharedWithMe"}
+}
 
 func (factory) NewSession(connectionID string, stored cloud.StoredCredentials, tokens *cloud.TokenStore, degradation *types.FSDegradationState) (cloud.Session, error) {
 	if stored.RefreshToken == "" {
@@ -100,6 +103,18 @@ func (s *Session) HasValidCredentials() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return !s.closed && s.stored.RefreshToken != ""
+}
+
+func (s *Session) ExportStoredCredentials() (cloud.StoredCredentials, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return cloud.StoredCredentials{}, fmt.Errorf("google drive session closed")
+	}
+	if s.stored.RefreshToken == "" {
+		return cloud.StoredCredentials{}, fmt.Errorf("google drive: no refresh token to export")
+	}
+	return s.stored, nil
 }
 
 func (s *Session) Close() error {
@@ -178,6 +193,24 @@ func (s *Session) driveService(ctx context.Context) (*drive.Service, error) {
 		return nil, err
 	}
 	return drive.NewService(ctx, option.WithHTTPClient(client))
+}
+
+func (s *Session) ResolveAccountIdentity(ctx context.Context) (cloud.AccountIdentity, error) {
+	srv, err := s.driveService(ctx)
+	if err != nil {
+		return cloud.AccountIdentity{}, err
+	}
+	about, err := srv.About.Get().Fields("user(displayName,emailAddress)").Do()
+	if err != nil {
+		return cloud.AccountIdentity{}, fmt.Errorf("google drive about: %w", err)
+	}
+	if about.User == nil {
+		return cloud.AccountIdentity{}, fmt.Errorf("google drive about: missing user")
+	}
+	return cloud.AccountIdentity{
+		Email:       about.User.EmailAddress,
+		DisplayName: about.User.DisplayName,
+	}, nil
 }
 
 type driveContext struct {

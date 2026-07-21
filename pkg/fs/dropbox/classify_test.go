@@ -129,12 +129,14 @@ func TestClassifyErrorUsesExplicitRetryAfterOnly(t *testing.T) {
 	}
 }
 
-func TestClassifyErrorNoRetryAfterWithoutHeader(t *testing.T) {
+func TestClassifyErrorNoRetryAfterUsesThrottleBackoff(t *testing.T) {
 	d := &DropboxFS{session: &Session{degradation: types.NewFSDegradationState()}}
 	err := &APIError{Status: http.StatusTooManyRequests, ErrorTag: "too_many_requests"}
 	class := d.classifyError(err)
-	if class.RetryAfter != 0 {
-		t.Fatalf("expected no retryAfter, got %v", class.RetryAfter)
+	// First streak step: 1s + ThrottleBackoffJitter
+	want := time.Second + types.ThrottleBackoffJitter
+	if class.RetryAfter != want {
+		t.Fatalf("retryAfter=%v want %v", class.RetryAfter, want)
 	}
 }
 

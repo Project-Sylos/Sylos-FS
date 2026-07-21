@@ -26,12 +26,16 @@ type SpectraSession struct {
 }
 
 type spectraConfig struct {
-	Mode string `json:"mode"`
+	Mode            string             `json:"mode"`
+	SecondaryTables map[string]float64 `json:"secondary_tables"`
+	Auth            *struct {
+		Enabled bool `json:"enabled"`
+	} `json:"auth"`
 }
 
 // NewSpectraSession creates a new Spectra session by calling sdk.New().
 func NewSpectraSession(configPath string) (*SpectraSession, error) {
-	isEphemeral, err := readSpectraMode(configPath)
+	cfgMeta, isEphemeral, err := readSpectraConfigMeta(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Spectra config mode: %w", err)
 	}
@@ -39,6 +43,19 @@ func NewSpectraSession(configPath string) (*SpectraSession, error) {
 	spectraFS, err := sdk.New(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Spectra session: %w", err)
+	}
+
+	if spectraFS.AuthEnabled() {
+		worlds := []string{"primary"}
+		for world := range cfgMeta.SecondaryTables {
+			worlds = append(worlds, world)
+		}
+		for _, world := range worlds {
+			if _, err := spectraFS.EnsureWorldAuth(world); err != nil {
+				_ = spectraFS.Close()
+				return nil, fmt.Errorf("ensure auth for world %s: %w", world, err)
+			}
+		}
 	}
 
 	return &SpectraSession{
@@ -50,18 +67,18 @@ func NewSpectraSession(configPath string) (*SpectraSession, error) {
 	}, nil
 }
 
-func readSpectraMode(configPath string) (bool, error) {
+func readSpectraConfigMeta(configPath string) (spectraConfig, bool, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return false, fmt.Errorf("failed to read config file: %w", err)
+		return spectraConfig{}, false, fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	var config spectraConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return false, fmt.Errorf("failed to parse config file: %w", err)
+		return spectraConfig{}, false, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	return config.Mode == "ephemeral", nil
+	return config, config.Mode == "ephemeral", nil
 }
 
 // Close closes the Spectra SDK instance.
@@ -107,6 +124,15 @@ func (s *SpectraSession) CreateAdapter(rootID, world string) (*SpectraFS, error)
 		return nil, fmt.Errorf("cannot create adapter: session has no SpectraFS instance")
 	}
 
+	if world == "" {
+		world = "primary"
+	}
+	if spectraFS.AuthEnabled() {
+		if _, err := spectraFS.EnsureWorldAuth(world); err != nil {
+			return nil, fmt.Errorf("ensure auth for world %s: %w", world, err)
+		}
+	}
+
 	adapter, err := NewSpectraFS(spectraFS, rootID, world, isEphemeral, WithDegradationState(s.degradation))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adapter: %w", err)
@@ -132,4 +158,11 @@ func (s *SpectraSession) IsEphemeral() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.isEphemeral
+}
+
+// GetSDKInstance returns the shared Spectra SDK (for tests / advanced wiring).
+func (s *SpectraSession) GetSDKInstance() *sdk.SpectraFS {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.spectraFS
 }

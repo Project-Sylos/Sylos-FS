@@ -17,6 +17,10 @@ func StoredCredentialsFromOAuth(providerID, refreshToken, clientID, clientSecret
 		stored.TokenURI = "https://oauth2.googleapis.com/token"
 	case ProviderDropbox:
 		stored.TokenURI = "https://api.dropboxapi.com/oauth2/token"
+	case ProviderOneDrive, ProviderSharePoint:
+		stored.TokenURI = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+	case ProviderBox:
+		stored.TokenURI = "https://api.box.com/oauth2/token"
 	}
 	return stored
 }

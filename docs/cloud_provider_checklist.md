@@ -12,19 +12,45 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
 3. **Session** — Ref-counted via `ServiceManager`; holds refresh token metadata, `TokenStore` access token, degradation state.
 4. **FSAdapter** — Implement `types.FSAdapter` + `CloudAdapterChecklist`:
    - `RegisterCredentials` / `Initialize` / `HasValidCredentials`
-   - `ClassifyXxxError` + `DoWithClassifiedRetry` with 401 refresh callback
+   - `ClassifyXxxError` + `DoWithClassifiedRetry` with **401 refresh as FS middleware**
+     (`IsAuthFailure` + `Refresh`). Workers only wait on the adapter call; on refresh
+     success the op retries; on refresh failure return a classified auth error.
+     LocalFS omits Refresh (no tokens).
    - `FSDegradationReporter` on shared session state
    - `FSListChildrenPagination` with provider page limits
+   - Optional batch mutations: `FSCreateFolderBatch` / `FSDeleteBatch` / `FSUploadFilesBatch` (Dropbox implements all three; ME uses `LeaseGroupBudget` when present). Graph `$batch` (max 20) is not used for these interfaces in v1.
+   - Optional `FSTransferRestartPolicy` (+ `FSResumableWrite` when byte-resume in a fresh session is supported). Dropbox declares non-resumable overwrite-safe (upload sessions are not handed off); LocalFS seeks.
 5. **Blank import** — Register factory in `pkg/fs/cloud_register.go`.
 6. **Tests** — Classify errors, credential encrypt/decrypt round-trip (no live API required).
 
 ### Dropbox (implemented)
 
-- Package: `pkg/fs/dropbox/` — `session.go`, `client.go`, `adapter.go`, `classify.go`, `transfer.go`
+- Package: `pkg/fs/dropbox/` — `session.go`, `client.go`, `adapter.go`, `classify.go`, `transfer.go`, `batch.go`
 - Roots: `user_root`, `team_space`, `team_folder`, `shared_folder` (see `pkg/cloud/roots.go`)
 - Browse: `cloud.BrowseRoot(root)` passes namespace metadata via `driveId`
+- Batch: `files/create_folder_batch` + `files/delete_batch` + `upload_session/start_batch` + `upload_session/finish_batch` (max 1000); ME pulls ~20k and leases ~1000 when these capabilities are present. File batch reduces commit RPCs (not bytes); appends stay per-chunk; finish_batch is serialized per adapter.
 - OAuth token URI: `https://api.dropboxapi.com/oauth2/token`
 - Scopes: `files.metadata.read`, `files.content.read`, `files.content.write`, `account_info.read`, `sharing.read`, `team_data.team_space`
+
+### OneDrive / SharePoint (implemented)
+
+- Shared Graph client: `pkg/fs/msgraph/`
+- OneDrive: `pkg/fs/onedrive/` — My files + Shared (browse-only)
+- SharePoint: `pkg/fs/sharepoint/` — Sites (browse-only) → document libraries (drives) + subsites; migration roots are drive roots or folders inside drives
+- OAuth token URI: `https://login.microsoftonline.com/common/oauth2/v2.0/token`
+- OneDrive scopes: `Files.ReadWrite.All`, `offline_access`, `User.Read`
+- SharePoint scopes: `Sites.ReadWrite.All`, `Files.ReadWrite.All`, `offline_access`, `User.Read`
+
+### Box (implemented)
+
+- Package: `pkg/fs/box/` — `session.go`, `client.go`, `adapter.go`, `classify.go`, `transfer.go`
+- Roots: **All Files** (`folder id 0`, `my_drive`)
+- OAuth: authorize `https://account.box.com/api/oauth2/authorize`, token `https://api.box.com/oauth2/token`
+- Scope: `root_readwrite` (Platform App + User Auth / OAuth 2.0)
+- **Refresh tokens are single-use** — session rotates + persists via `CredentialsPersister` / `CloudConnectionOptions.PersistCredentials`
+- Rate limits: ~1000 req/min/user general, ~240 upload/min/user; honor HTTP 429 + `Retry-After`
+- Batch API max 20 (no uploads) — no `FS*Batch` in v1
+- Upload: simple multipart ≤50MB; chunked upload sessions above that (spill buffer)
 
 ## Sylos-API
 
@@ -64,7 +90,8 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
 - **Refresh token:** encrypted at rest in `creds/{connectionID}.enc`.
 - **Access token:** in-memory only (`ConnectionManager` + `cloud.DefaultTokenStore`).
 - **OAuth browser flow:** owned by Wails UI; API receives tokens via POST.
-- **401 refresh:** adapter/session calls provider token endpoint; not the UI.
+- **401 refresh:** FS adapter middleware (`DoWithClassifiedRetry`) refreshes and retries;
+  opaque to Migration-Engine workers. Not the UI. Refresh failure → classified auth error.
 
 ## SFTP / FTP (non-OAuth)
 

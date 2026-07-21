@@ -25,6 +25,9 @@ func ClassifySpectraError(err error) types.FSErrorClassification {
 			RetryAfter: rl.RetryAfter,
 		}
 	}
+	if _, ok := sdk.IsUnauthorized(err); ok {
+		return types.FSErrorClassification{Bucket: types.FSErrorFatal, ErrorCode: "auth"}
+	}
 	if d, ok := credentials.RateLimitFromError(err); ok {
 		return types.FSErrorClassification{
 			Bucket:     types.FSErrorThrottle,

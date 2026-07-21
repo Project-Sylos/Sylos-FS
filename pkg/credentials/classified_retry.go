@@ -43,7 +43,17 @@ type ClassifiedRetryConfig struct {
 	OnSuspectedThrottle func(class types.FSErrorClassification, attempt int)
 }
 
-// DoWithClassifiedRetry runs op with separate retry vs throttle-backoff axes.
+// DoWithClassifiedRetry is the FS-side middleware around a single adapter I/O call.
+// Workers only wait on the FS method; they never refresh tokens themselves.
+//
+// Order of handling on error:
+//  1. Auth failure (IsAuthFailure) → Refresh once, then retry op. If refresh fails,
+//     return the refresh error (caller classifies as auth/401). LocalFS omits Refresh.
+//  2. Fatal → return immediately
+//  3. Explicit throttle → sleep (capped) and retry
+//  4. Ambiguous → neutral retry until behavioral promotion to throttle
+//  5. Generic retryable → short sleep and retry
+//
 // Explicit throttle (Classify or IsRateLimited) inflates rate-limit sleep; ambiguous
 // errors default to neutral retry until behavioral promotion; generic retryable errors
 // retry without touching throttle state.
@@ -74,6 +84,16 @@ func DoWithClassifiedRetry(ctx context.Context, cfg ClassifiedRetryConfig, op fu
 		err := op()
 		if err == nil {
 			return nil
+		}
+
+		// Auth refresh before bucket handling so 401 / auth-fatal can recover once
+		// (mirrors DoWithAuthRetry). Classify may mark these Fatal or Retryable.
+		if base.IsAuthFailure != nil && base.IsAuthFailure(err) && base.Refresh != nil && !refreshed {
+			if rerr := base.Refresh(ctx); rerr != nil {
+				return fmt.Errorf("%w (refresh failed: %v)", err, rerr)
+			}
+			refreshed = true
+			continue
 		}
 
 		var class types.FSErrorClassification
@@ -158,14 +178,6 @@ func DoWithClassifiedRetry(ctx context.Context, cfg ClassifiedRetryConfig, op fu
 				return err
 			}
 			genericWaits++
-			continue
-		}
-
-		if base.IsAuthFailure != nil && base.IsAuthFailure(err) && base.Refresh != nil && !refreshed {
-			if rerr := base.Refresh(ctx); rerr != nil {
-				return fmt.Errorf("%w (refresh failed: %v)", err, rerr)
-			}
-			refreshed = true
 			continue
 		}
 
