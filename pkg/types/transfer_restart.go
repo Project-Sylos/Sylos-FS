@@ -57,3 +57,18 @@ func OpenWriteFromOffsetFrom(adapter any) (FSResumableWrite, bool) {
 	w, ok := adapter.(FSResumableWrite)
 	return w, ok
 }
+
+// FSOpenWriteWithSize opens a destination write stream with a declared content size.
+// Providers that need size up-front for upload sessions (e.g. Box) implement this.
+type FSOpenWriteWithSize interface {
+	OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error)
+}
+
+// OpenWriteWithSizeFrom returns FSOpenWriteWithSize if implemented.
+func OpenWriteWithSizeFrom(adapter any) (FSOpenWriteWithSize, bool) {
+	if adapter == nil {
+		return nil, false
+	}
+	w, ok := adapter.(FSOpenWriteWithSize)
+	return w, ok
+}

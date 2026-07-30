@@ -19,7 +19,11 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
    - `FSDegradationReporter` on shared session state
    - `FSListChildrenPagination` with provider page limits
    - Optional batch mutations: `FSCreateFolderBatch` / `FSDeleteBatch` / `FSUploadFilesBatch` (Dropbox implements all three; ME uses `LeaseGroupBudget` when present). Graph `$batch` (max 20) is not used for these interfaces in v1.
+   - Optional rename: `FSRename` / `RenameNode` for Accept-on-already-existed destination remaps (local, SFTP, Dropbox implement; others may return unsupported).
    - Optional `FSTransferRestartPolicy` (+ `FSResumableWrite` when byte-resume in a fresh session is supported). Dropbox declares non-resumable overwrite-safe (upload sessions are not handed off); LocalFS seeks.
+  - Optional **`FSOpenWriteWithSize`** when the provider needs declared content length for chunked upload sessions (Box). ME prefers this over bare `OpenWrite` when present.
+  - **Upload streaming** — `OpenWrite` must stream fragments/parts on `Write` (or pipe-concurrent upload). No full-file temp spill / close-only bulk upload. See Sylos-FS README “Upload streaming contract”.
+  - **`FSStorageInfo`** (`GetStorageInfo`) — report account/volume free space when the provider supports it; return `Available: false` when not (SFTP). Local uses `statfs` / `GetDiskFreeSpaceEx`; Google Drive `about.storageQuota`; Dropbox `users/get_space_usage`; Box `/users/me`; OneDrive/SharePoint Graph `drive.quota`; Spectra returns a deterministic fake.
 5. **Blank import** — Register factory in `pkg/fs/cloud_register.go`.
 6. **Tests** — Classify errors, credential encrypt/decrypt round-trip (no live API required).
 
@@ -40,6 +44,7 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
 - OAuth token URI: `https://login.microsoftonline.com/common/oauth2/v2.0/token`
 - OneDrive scopes: `Files.ReadWrite.All`, `offline_access`, `User.Read`
 - SharePoint scopes: `Sites.ReadWrite.All`, `Files.ReadWrite.All`, `offline_access`, `User.Read`
+- Upload: streaming writer in `pkg/fs/msgraph` — 5 MiB session fragments on `Write`; ≤4 MiB may use simple PUT buffered until `Close` only (cap = simple upload max, not whole large files)
 
 ### Box (implemented)
 
@@ -50,7 +55,7 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
 - **Refresh tokens are single-use** — session rotates + persists via `CredentialsPersister` / `CloudConnectionOptions.PersistCredentials`
 - Rate limits: ~1000 req/min/user general, ~240 upload/min/user; honor HTTP 429 + `Retry-After`
 - Batch API max 20 (no uploads) — no `FS*Batch` in v1
-- Upload: simple multipart ≤50MB; chunked upload sessions above that (spill buffer)
+- Upload: **streamed** — simple multipart ≤50MB over a pipe; above that, upload session parts as the pipe is read (no spill/temp). Prefer `OpenWriteWithSize` so session `file_size` matches content length.
 
 ## Sylos-API
 

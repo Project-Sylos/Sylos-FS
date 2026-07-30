@@ -215,7 +215,7 @@ func (m *ServiceManager) ListCloudChildren(ctx context.Context, connectionID, id
 	var folder types.Folder
 	var err error
 	if cloud.IsVirtualRootListing(identifier, rootType) {
-		folder, err = cloud.BrowseRoot(cloud.Root{ID: identifier, RootType: rootType, DriveID: driveID})
+		folder, err = cloud.BrowseFolder(identifier, rootType, driveID)
 	} else {
 		folder, err = cloud.BrowseFolder(identifier, "", driveID)
 		if err == nil && driveID != "" {
@@ -264,7 +264,7 @@ func (m *ServiceManager) acquireCloudAdapter(def serviceDefinition, root types.F
 	if def.Cloud == nil {
 		return nil, nil, fmt.Errorf("cloud configuration missing")
 	}
-	if err := cloud.ValidateMigrationRoot(def.Cloud.ProviderID, root.ServiceID); err != nil {
+	if err := cloud.ValidateMigrationRootFolder(def.Cloud.ProviderID, root); err != nil {
 		return nil, nil, err
 	}
 	conn, err := m.incrementConnectionRefCount(connectionID)

@@ -229,7 +229,7 @@ func (m *ServiceManager) cloudBrowseAdapter(connectionID, contextID, rootType, d
 	var folder types.Folder
 	var err error
 	if rootType != "" {
-		folder, err = cloud.BrowseRoot(cloud.Root{ID: contextID, RootType: rootType, DriveID: driveID})
+		folder, err = cloud.BrowseFolder(contextID, rootType, driveID)
 	} else {
 		folder, err = cloud.BrowseFolder(contextID, "", driveID)
 	}

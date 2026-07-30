@@ -122,6 +122,10 @@ func (d *SharePointFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCl
 	return d.ops.OpenWrite(ctx, fileID)
 }
 
+func (d *SharePointFS) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
+	return d.ops.OpenWriteWithSize(ctx, fileID, size)
+}
+
 func (d *SharePointFS) NormalizePath(p string) string { return d.ops.NormalizePath(p) }
 
 func (d *SharePointFS) Initialize(masterKey []byte, connectionID string) error {
@@ -175,10 +179,11 @@ func (d *SharePointFS) ListChildrenPagination() types.ListChildrenPagination {
 var (
 	_ types.FSDegradationReporter    = (*SharePointFS)(nil)
 	_ types.FSListChildrenPagination = (*SharePointFS)(nil)
+	_ types.FSStorageInfo            = (*SharePointFS)(nil)
 )
 
 // RegisterCredentialsPayload builds stored credentials JSON from UI token POST.
 func RegisterCredentialsPayload(refreshToken, clientID, clientSecret string, scopes []string) ([]byte, error) {
-	stored := cloud.StoredCredentialsFromOAuth(cloud.ProviderSharePoint, refreshToken, clientID, clientSecret, scopes)
+	stored := cloud.StoredCredentialsFromOAuthTenant(cloud.ProviderSharePoint, refreshToken, clientID, clientSecret, scopes, "")
 	return json.Marshal(stored)
 }

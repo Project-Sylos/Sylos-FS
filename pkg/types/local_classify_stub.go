@@ -11,23 +11,26 @@ import (
 )
 
 // ClassifyLocalError maps os errors from local-path FS calls into buckets (non-Unix stub).
+// Unrecognized errors are Retryable rather than Ambiguous: without platform errno mapping
+// there is no evidence of load shedding, and Ambiguous is the only bucket that can be
+// promoted to throttle (which scales workers down).
+//
+// Windows / winfsp sharing- and lock-violation mapping still needs a platform-specific
+// classifier before those signals can drive the autoscaler.
 func ClassifyLocalError(err error) FSErrorClassification {
 	if err == nil {
 		return FSErrorClassification{Bucket: FSErrorFatal}
 	}
-	code := "unknown"
 	switch {
+	case errors.Is(err, ErrPathBlocked):
+		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: "path_blocked"}
 	case os.IsNotExist(err):
-		code = "not_exist"
-		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: code}
+		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: "not_exist"}
 	case os.IsPermission(err):
-		code = "permission"
-		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: code}
+		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: "permission"}
+	case errors.Is(err, os.ErrInvalid):
+		return FSErrorClassification{Bucket: FSErrorFatal, ErrorCode: "invalid"}
 	default:
-		var pathErr *os.PathError
-		if errors.As(err, &pathErr) && pathErr != nil {
-			return FSErrorClassification{Bucket: FSErrorAmbiguous, ErrorCode: pathErr.Err.Error()}
-		}
-		return FSErrorClassification{Bucket: FSErrorAmbiguous, ErrorCode: code}
+		return FSErrorClassification{Bucket: FSErrorRetryable, ErrorCode: "unclassified"}
 	}
 }

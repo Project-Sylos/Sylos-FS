@@ -26,10 +26,6 @@ type BoxFS struct {
 	masterKey []byte
 }
 
-func (d *BoxFS) client(ctx context.Context) (*Client, error) {
-	return d.session.apiClient(ctx)
-}
-
 func (d *BoxFS) resolveFolderID(identifier string) string {
 	id := strings.TrimSpace(identifier)
 	if id == "" || id == "root" || id == d.root.ServiceID {
@@ -49,7 +45,7 @@ func (d *BoxFS) ListChildren(ctx context.Context, identifier string, depth *int,
 
 	var result types.ListResult
 	err := d.withClassifiedRetry(ctx, "ListChildren", func() error {
-		client, err := d.client(ctx)
+		client, err := d.session.apiClient(ctx)
 		if err != nil {
 			return err
 		}
@@ -102,7 +98,7 @@ func (d *BoxFS) itemToFile(item Item, basePath string) types.File {
 func (d *BoxFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
 	var rc io.ReadCloser
 	err := d.withClassifiedRetry(ctx, "OpenRead", func() error {
-		client, err := d.client(ctx)
+		client, err := d.session.apiClient(ctx)
 		if err != nil {
 			return err
 		}
@@ -125,7 +121,7 @@ func (d *BoxFS) CreateFolder(ctx context.Context, parentId, name string, metadat
 	}
 	var out types.Folder
 	err := d.withClassifiedRetry(ctx, "CreateFolder", func() error {
-		client, err := d.client(ctx)
+		client, err := d.session.apiClient(ctx)
 		if err != nil {
 			return err
 		}
@@ -148,7 +144,7 @@ func (d *BoxFS) DeleteNode(ctx context.Context, nodeID, nodeType string) error {
 		return fmt.Errorf("box: node id is required")
 	}
 	return d.withClassifiedRetry(ctx, "DeleteNode", func() error {
-		client, err := d.client(ctx)
+		client, err := d.session.apiClient(ctx)
 		if err != nil {
 			return err
 		}
@@ -167,7 +163,7 @@ func (d *BoxFS) CreateFile(ctx context.Context, parentID, name string, size int6
 	basePath := types.LogicalParentFromCreateMetadata(metadata, d.root.LocationPath)
 	loc := types.ChildLocationFromCreateMetadata(metadata, basePath, name)
 	return types.File{
-		ServiceID:    pendingFileID(parentID, name),
+		ServiceID:    pendingFileID(parentID, name, size),
 		ParentId:     parentID,
 		ParentPath:   basePath,
 		DisplayName:  name,
@@ -179,7 +175,20 @@ func (d *BoxFS) CreateFile(ctx context.Context, parentID, name string, size int6
 }
 
 func (d *BoxFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
-	return newBoxWriter(d, ctx, fileID)
+	return d.OpenWriteWithSize(ctx, fileID, -1)
+}
+
+// OpenWriteWithSize streams an upload with a declared content length (required for
+// chunked Box sessions and overwrite when the pending id has no size).
+func (d *BoxFS) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
+	w, err := newBoxWriter(d, ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if size >= 0 {
+		w.size = size
+	}
+	return w, nil
 }
 
 func (d *BoxFS) NormalizePath(p string) string {
@@ -215,6 +224,23 @@ func (d *BoxFS) HasValidCredentials() bool {
 	return d.session.HasValidCredentials()
 }
 
+func (d *BoxFS) DegradationState() types.FSDegradationSnapshot {
+	if d.session.degradation == nil {
+		return types.FSDegradationSnapshot{}
+	}
+	return d.session.degradation.DegradationState()
+}
+
+func (d *BoxFS) GetDegradationState() *types.FSDegradationState {
+	return d.session.degradation
+}
+
+func (d *BoxFS) RecordSignal(signal types.FSDegradationSignal) {
+	if d.session.degradation != nil {
+		d.session.degradation.RecordSignal(signal)
+	}
+}
+
 func (d *BoxFS) ListChildrenPagination() types.ListChildrenPagination {
 	return types.ListChildrenPagination{
 		MinPageSize:                   100,
@@ -225,6 +251,8 @@ func (d *BoxFS) ListChildrenPagination() types.ListChildrenPagination {
 }
 
 var (
-	_ types.FSAdapter               = (*BoxFS)(nil)
+	_ types.FSAdapter                = (*BoxFS)(nil)
+	_ types.FSDegradationReporter    = (*BoxFS)(nil)
 	_ types.FSListChildrenPagination = (*BoxFS)(nil)
+	_ types.FSStorageInfo            = (*BoxFS)(nil)
 )

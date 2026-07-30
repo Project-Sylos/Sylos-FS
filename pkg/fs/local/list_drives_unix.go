@@ -34,10 +34,6 @@ var linuxDriveFSTypes = map[string]struct{}{
 	"fuseblk": {}, // ntfs-3g and some exfat/fuse mounts on desktop Linux
 }
 
-var darwinNetworkFSTypes = map[string]struct{}{
-	"smbfs": {}, "nfs": {}, "afpfs": {}, "cifs": {}, "webdav": {},
-}
-
 // ListDrives enumerates local volumes and block devices for the current Unix-like OS.
 func ListDrives() ([]types.DriveInfo, error) {
 	switch runtime.GOOS {
@@ -416,10 +412,6 @@ func linuxDriveTypeForMount(source, fstype string) string {
 		return "network"
 	}
 	return linuxDriveType(source)
-}
-
-func darwinIsNetworkSource(source string) bool {
-	return linuxIsNetworkSource(source)
 }
 
 func linuxSkipBlockDevice(name string) bool {

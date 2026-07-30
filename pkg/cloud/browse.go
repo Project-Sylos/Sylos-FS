@@ -146,8 +146,3 @@ func BrowseFolder(identifier, rootType, driveID string) (types.Folder, error) {
 		return types.Folder{}, fmt.Errorf("cloud browse: unknown rootType %q", rootType)
 	}
 }
-
-// BrowseRoot builds a folder descriptor from a cloud.Root (includes driveId/namespace metadata).
-func BrowseRoot(root Root) (types.Folder, error) {
-	return BrowseFolder(root.ID, root.RootType, root.DriveID)
-}

@@ -29,10 +29,10 @@ func (policyTestFactory) ListRoots(context.Context, Session) ([]Root, error) {
 func TestValidateMigrationRootUsesProviderPolicy(t *testing.T) {
 	RegisterFactory(policyTestFactory{ids: []string{"virtual"}})
 
-	if err := ValidateMigrationRoot("policy_test", "real-folder"); err != nil {
+	if err := ValidateMigrationRootFolder("policy_test", types.Folder{ServiceID: "real-folder"}); err != nil {
 		t.Fatalf("real folder rejected: %v", err)
 	}
-	if err := ValidateMigrationRoot("policy_test", "virtual"); !errors.Is(err, ErrForbiddenMigrationRoot) {
+	if err := ValidateMigrationRootFolder("policy_test", types.Folder{ServiceID: "virtual"}); !errors.Is(err, ErrForbiddenMigrationRoot) {
 		t.Fatalf("expected ErrForbiddenMigrationRoot, got %v", err)
 	}
 }
@@ -46,7 +46,7 @@ func TestForbiddenMigrationRootIDsReturnsCopy(t *testing.T) {
 	}
 	ids[0] = "mutated"
 
-	if err := ValidateMigrationRoot("policy_test", "virtual"); !errors.Is(err, ErrForbiddenMigrationRoot) {
+	if err := ValidateMigrationRootFolder("policy_test", types.Folder{ServiceID: "virtual"}); !errors.Is(err, ErrForbiddenMigrationRoot) {
 		t.Fatalf("provider policy was mutated: %v", err)
 	}
 }

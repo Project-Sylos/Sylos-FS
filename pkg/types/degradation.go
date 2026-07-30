@@ -35,9 +35,11 @@ type FSDegradationSnapshot struct {
 }
 
 // FSDegradationReporter is implemented by adapters that expose degradation telemetry.
+// GetDegradationState is required for ME rate-limit bridging (AIMD FS_THROTTLE + UI badge).
 type FSDegradationReporter interface {
 	DegradationState() FSDegradationSnapshot
 	RecordSignal(FSDegradationSignal)
+	GetDegradationState() *FSDegradationState
 }
 
 // FSDegradationState holds shared per-backend degradation counters.
@@ -141,6 +143,11 @@ func (s *FSDegradationState) TakeRecentHits() int64 {
 		return 0
 	}
 	return atomic.SwapInt64(&s.recentHits, 0)
+}
+
+// GetDegradationState implements FSDegradationReporter for the state itself.
+func (s *FSDegradationState) GetDegradationState() *FSDegradationState {
+	return s
 }
 
 // AsDegradationReporter returns the state as FSDegradationReporter when non-nil.

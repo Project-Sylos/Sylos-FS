@@ -6,6 +6,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -71,17 +72,20 @@ func (l *LocalFS) ListChildren(ctx context.Context, identifier string, depth *in
 	var result types.ListResult
 	err := l.withClassifiedRetryCtx(ctx, "ListChildren", func() error {
 		var innerErr error
-		result, innerErr = l.listChildrenOnce(identifier, depth, parentPath)
+		result, innerErr = l.listChildrenOnce(ctx, identifier)
 		return innerErr
 	})
 	return result, err
 }
 
-func (l *LocalFS) listChildrenOnce(identifier string, depth *int, parentPath string) (types.ListResult, error) {
+func (l *LocalFS) listChildrenOnce(ctx context.Context, identifier string) (types.ListResult, error) {
 	var result types.ListResult
 
-	if isPseudoFSPath(l.root) {
+	if isBlockedPath(l.root) {
 		l.warnState.warnPseudoFS(l.OnWarning)
+	}
+	if isBlockedPath(identifier) {
+		return result, errBlockedPath(identifier)
 	}
 
 	normalizedParentId := strings.ReplaceAll(identifier, "\\", "/")
@@ -105,53 +109,79 @@ func (l *LocalFS) listChildrenOnce(identifier string, depth *int, parentPath str
 		return result, err
 	}
 
-	entries, err := os.ReadDir(identifier)
+	dir, err := os.Open(identifier)
 	if err != nil {
 		return result, err
 	}
+	defer dir.Close()
 
-	for _, entry := range entries {
-		name := entry.Name()
-		fullPath := filepath.Join(identifier, name)
-		fullPath = strings.ReplaceAll(fullPath, "\\", "/")
-
-		fi, err := os.Lstat(fullPath)
-		if err != nil {
-			continue
+	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		entries, err := dir.ReadDir(readDirBatchSize)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return result, err
+		}
+		if len(entries) == 0 {
+			break
 		}
 
-		rel := l.relativize(name, parentRelPath)
-		lastUpdated := fi.ModTime().Format(time.RFC3339)
-
-		if childListableAsFolder(fi) {
-			if l.rootDevValid {
-				if dev, ok := deviceID(fi); ok && dev != l.rootDev {
-					l.warnState.warnFsBoundary(l.OnWarning, fullPath)
-				}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return result, err
 			}
-			result.Folders = append(result.Folders, types.Folder{
-				ServiceID:    fullPath,
-				ParentId:     identifier,
-				ParentPath:   parentRelPath,
-				DisplayName:  name,
-				LocationPath: rel,
-				LastUpdated:  lastUpdated,
-				Type:         types.NodeTypeFolder,
-			})
-			continue
+			name := entry.Name()
+			fullPath := filepath.Join(identifier, name)
+			fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+
+			if isBlockedPath(fullPath) {
+				l.warnState.warnBlockedChild(l.OnWarning, fullPath)
+				continue
+			}
+
+			fi, err := os.Lstat(fullPath)
+			if err != nil {
+				continue
+			}
+
+			rel := l.relativize(name, parentRelPath)
+			lastUpdated := fi.ModTime().Format(time.RFC3339)
+
+			if childListableAsFolder(fi) {
+				if l.rootDevValid {
+					if dev, ok := deviceID(fi); ok && dev != l.rootDev {
+						l.warnState.warnFsBoundary(l.OnWarning, fullPath)
+					}
+				}
+				result.Folders = append(result.Folders, types.Folder{
+					ServiceID:    fullPath,
+					ParentId:     identifier,
+					ParentPath:   parentRelPath,
+					DisplayName:  name,
+					LocationPath: rel,
+					LastUpdated:  lastUpdated,
+					Type:         types.NodeTypeFolder,
+				})
+				continue
+			}
+
+			if childCopyableAsFile(fi) {
+				result.Files = append(result.Files, types.File{
+					ServiceID:    fullPath,
+					ParentId:     identifier,
+					ParentPath:   parentRelPath,
+					DisplayName:  name,
+					LocationPath: rel,
+					LastUpdated:  lastUpdated,
+					Size:         fi.Size(),
+					Type:         types.NodeTypeFile,
+				})
+			}
 		}
 
-		if childCopyableAsFile(fi) {
-			result.Files = append(result.Files, types.File{
-				ServiceID:    fullPath,
-				ParentId:     identifier,
-				ParentPath:   parentRelPath,
-				DisplayName:  name,
-				LocationPath: rel,
-				LastUpdated:  lastUpdated,
-				Size:         fi.Size(),
-				Type:         types.NodeTypeFile,
-			})
+		if errors.Is(err, io.EOF) || len(entries) < readDirBatchSize {
+			break
 		}
 	}
 
@@ -170,6 +200,9 @@ func (l *LocalFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, e
 }
 
 func (l *LocalFS) openReadOnce(ctx context.Context, fileID string) (io.ReadCloser, error) {
+	if isBlockedPath(fileID) {
+		return nil, errBlockedPath(fileID)
+	}
 	fi, err := os.Lstat(fileID)
 	if err != nil {
 		return nil, err
@@ -205,6 +238,9 @@ func (l *LocalFS) CreateFolder(ctx context.Context, parentId, name string, _ map
 func (l *LocalFS) createFolderOnce(parentId, name string) (types.Folder, error) {
 	fullPath := filepath.Join(parentId, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+	if isBlockedPath(fullPath) {
+		return types.Folder{}, errBlockedPath(fullPath)
+	}
 
 	normalizedParentId := strings.ReplaceAll(parentId, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
@@ -253,6 +289,37 @@ func (l *LocalFS) DeleteNode(ctx context.Context, nodeID string, nodeType string
 	return l.withClassifiedRetryCtx(ctx, "DeleteNode", func() error {
 		return l.deleteNodeOnce(nodeID, nodeType)
 	})
+}
+
+// RenameNode renames a local file or folder via os.Rename.
+func (l *LocalFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = nodeType
+	var out types.RenameResult
+	err := l.withClassifiedRetryCtx(ctx, "RenameNode", func() error {
+		from := strings.ReplaceAll(serviceID, "\\", "/")
+		if isBlockedPath(from) {
+			return errBlockedPath(from)
+		}
+		parent := strings.TrimSpace(parentServiceID)
+		if parent == "" {
+			parent = filepath.Dir(from)
+		}
+		parent = strings.ReplaceAll(parent, "\\", "/")
+		to := filepath.Join(parent, newName)
+		to = strings.ReplaceAll(to, "\\", "/")
+		if isBlockedPath(to) {
+			return errBlockedPath(to)
+		}
+		if err := os.Rename(from, to); err != nil {
+			return err
+		}
+		out = types.RenameResult{ServiceID: to, DisplayName: newName}
+		return nil
+	})
+	return out, err
 }
 
 func (l *LocalFS) deleteNodeOnce(nodeID, nodeType string) error {
@@ -304,6 +371,9 @@ func (l *LocalFS) CreateFile(ctx context.Context, parentID, name string, size in
 func (l *LocalFS) createFileOnce(parentID, name string, size int64) (types.File, error) {
 	fullPath := filepath.Join(parentID, name)
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+	if isBlockedPath(fullPath) {
+		return types.File{}, errBlockedPath(fullPath)
+	}
 
 	normalizedParentId := strings.ReplaceAll(parentID, "\\", "/")
 	root := strings.TrimSuffix(l.root, "/")
@@ -361,6 +431,9 @@ func (l *LocalFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser,
 }
 
 func (l *LocalFS) openWriteOnce(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	if isBlockedPath(fileID) {
+		return nil, errBlockedPath(fileID)
+	}
 	fi, err := os.Lstat(fileID)
 	if err != nil {
 		return nil, err
@@ -488,6 +561,8 @@ func (l *LocalFS) ListChildrenPagination() types.ListChildrenPagination {
 
 var (
 	_ types.FSAdapter               = (*LocalFS)(nil)
+	_ types.FSDegradationReporter   = (*LocalFS)(nil)
 	_ types.FSTransferRestartPolicy = (*LocalFS)(nil)
 	_ types.FSResumableWrite        = (*LocalFS)(nil)
+	_ types.FSStorageInfo           = (*LocalFS)(nil)
 )

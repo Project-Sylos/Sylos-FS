@@ -1,30 +1,48 @@
 # Sylos-FS
 
-A standardized filesystem adapter library for the Sylos project. This repository provides a unified interface for interacting with different filesystem types (local filesystem and Spectra filesystem simulator) that can be used by both the API and migration-engine repositories.
+A standardized filesystem adapter library for the Sylos project. Applications (Sylos-API, Migration Engine) talk to storage through a shared `FSAdapter` interface so local disk, SFTP, Spectra, and cloud providers share one contract.
 
 ## Overview
 
-Sylos-FS abstracts filesystem operations behind a common `FSAdapter` interface, allowing applications to work with different storage backends without changing their core logic. The library provides:
+- **Adapters**: Local, SFTP, Spectra, Google Drive, Dropbox, Box, OneDrive, SharePoint (Graph)
+- **Cloud sessions**: OAuth stored credentials, token refresh as FS middleware, shared `FSDegradationState`
+- **Service manager**: connection pooling / refcount, browse roots, pagination
+- **Streaming I/O**: `OpenRead` / `OpenWrite` move bytes in small chunks — **no full-file spill-to-temp** before upload
 
-- **Filesystem Adapters**: Implementations for local filesystem and Spectra filesystem
-- **Service Management**: Centralized service configuration and lifecycle management
-- **Connection Pooling**: Efficient resource management for Spectra connections
-- **Pagination Support**: Built-in pagination for listing directory contents
-- **Virtual Services**: Support for virtual service IDs ("local" and "spectra")
-
-## Package Structure
+## Package structure
 
 ```
 pkg/
-├── types/              # Shared types, interfaces, and utilities
-│   └── types.go        # Core types (Folder, File, FSAdapter, etc.)
-└── fs/                 # Service manager (package fs)
-    ├── manager.go      # ServiceManager, connection pooling
-    ├── copy_buffer.go  # GetCopyBuffer for io.CopyBuffer
-    ├── ctxstream/      # Context-aware Read/Write wrappers
-    ├── local/          # LocalFS adapter + Lstat safety
-    └── spectra/        # SpectraSession + SpectraFS adapter
+├── types/           # FSAdapter, Folder/File, degradation, pagination, optional batch/resume/size interfaces
+├── cloud/           # Provider IDs, OAuth store helpers, browse roots
+├── credentials/     # Classified retry helpers
+└── fs/
+    ├── manager*.go  # ServiceManager
+    ├── ctxstream/   # Context-aware pipe wrappers (Dropbox/GDrive/Box streaming)
+    ├── local/       # LocalFS (+ network/FUSE paths as local)
+    ├── sftp/
+    ├── spectra/
+    ├── googledrive/
+    ├── dropbox/
+    ├── box/
+    ├── msgraph/     # Shared Microsoft Graph client + streaming upload writer
+    ├── onedrive/
+    └── sharepoint/
 ```
+
+See **[pkg/fs/README.md](./pkg/fs/README.md)** for adapter usage patterns and **[docs/cloud_provider_checklist.md](./docs/cloud_provider_checklist.md)** when adding a provider.
+
+## Upload streaming contract
+
+Migration Engine copies with a tight read/write loop. Destination writers must:
+
+1. Accept bytes on `Write` without staging the entire object to disk.
+2. Upload provider fragments/parts as buffers fill (or concurrently via `io.Pipe` like Dropbox/Drive).
+3. Use `Close` to finish/commit the session (and flush a trailing partial fragment), not to perform the only network transfer.
+
+Optional **`FSOpenWriteWithSize`** (`OpenWriteWithSize(ctx, fileID, size)`) supplies declared length for APIs that require it up front (Box chunked sessions). ME calls this when implemented.
+
+Small in-memory buffers for one fragment (e.g. ≤5–8 MiB Graph/Box part, or ≤4 MiB Graph simple PUT) are fine. **Temp-file spill of the whole upload is not.**
 
 ## Quick Start
 
@@ -141,17 +159,12 @@ if err := writer.Close(); err != nil {
 
 ## Features
 
-### Filesystem Adapters
+### Filesystem adapters
 
-- **LocalFS**: Interacts with the local operating system filesystem
-  - Supports Windows and Unix-like systems
-  - Handles path normalization across platforms
-  - Supports restricted and unrestricted browsing modes
-
-- **SpectraFS**: Interacts with the Spectra filesystem simulator
-  - Multi-world support (primary, s1, s2, etc.)
-  - Node-based filesystem operations
-  - Connection pooling for efficient resource usage
+- **LocalFS** — OS filesystem (physical, network mounts, FUSE/WinFSP as local paths)
+- **SFTP** — remote SSH filesystem
+- **SpectraFS** — synthetic tree for chaos / integration tests
+- **Cloud** — Google Drive, Dropbox, Box, OneDrive, SharePoint (see `docs/cloud_provider_checklist.md`)
 
 ### Service Manager
 

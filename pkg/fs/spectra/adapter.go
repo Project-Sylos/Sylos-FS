@@ -4,11 +4,9 @@
 package spectra
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -304,81 +302,43 @@ func (s *SpectraFS) CreateFile(ctx context.Context, parentID, name string, size 
 	}, nil
 }
 
-// OpenWrite returns a WriteCloser that buffers writes internally.
-// Since Spectra SDK requires all data upfront, this buffers in memory or to a temp file.
-// On Close(), it creates the file in Spectra with the actual data.
-// The fileID must be a "pending:" ID returned from CreateFile().
+// OpenWrite returns a WriteCloser that accepts a byte stream without staging.
+// Spectra's UploadFile does not persist request bytes (deterministic fake content),
+// so Write only counts/accepts the stream; Close registers the node.
 func (s *SpectraFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
+	_ = ctx
 	if !strings.HasPrefix(fileID, "pending:") {
 		return nil, fmt.Errorf("OpenWrite requires a pending file ID from CreateFile(), got: %s", fileID)
 	}
 	return newSpectraWriteCloser(s, fileID), nil
 }
 
-// spectraWriteCloser buffers writes and uploads to Spectra on Close().
+// spectraWriteCloser accepts streamed bytes without buffering to memory or disk.
 type spectraWriteCloser struct {
 	spectraFS *SpectraFS
 	fileID    string
-	buffer    *bytes.Buffer
-	tempFile  *os.File
-	useTemp   bool
 	mu        sync.Mutex
 	closed    bool
+	accepted  int64
 }
 
-// newSpectraWriteCloser creates a new buffering WriteCloser for Spectra.
-// It uses memory buffer initially, and can spill to temp file for large writes.
 func newSpectraWriteCloser(spectraFS *SpectraFS, fileID string) *spectraWriteCloser {
 	return &spectraWriteCloser{
 		spectraFS: spectraFS,
 		fileID:    fileID,
-		buffer:    &bytes.Buffer{},
-		useTemp:   false,
-		closed:    false,
 	}
 }
 
-// Write buffers data. For large files, it may spill to a temp file.
 func (swc *spectraWriteCloser) Write(p []byte) (int, error) {
 	swc.mu.Lock()
 	defer swc.mu.Unlock()
-
 	if swc.closed {
 		return 0, fmt.Errorf("write to closed writer")
 	}
-
-	// Use memory buffer for small files (< 10MB)
-	// For larger files, spill to temp file
-	const memoryThreshold = 10 * 1024 * 1024 // 10MB
-
-	if !swc.useTemp && swc.buffer.Len()+len(p) > memoryThreshold {
-		// Spill to temp file
-		tempFile, err := os.CreateTemp("", "spectra-upload-*")
-		if err != nil {
-			return 0, fmt.Errorf("failed to create temp file: %w", err)
-		}
-
-		// Write existing buffer to temp file
-		if _, err := tempFile.Write(swc.buffer.Bytes()); err != nil {
-			tempFile.Close()
-			os.Remove(tempFile.Name())
-			return 0, fmt.Errorf("failed to write buffer to temp file: %w", err)
-		}
-
-		swc.tempFile = tempFile
-		swc.buffer = nil
-		swc.useTemp = true
-	}
-
-	if swc.useTemp {
-		return swc.tempFile.Write(p)
-	}
-
-	return swc.buffer.Write(p)
+	swc.accepted += int64(len(p))
+	return len(p), nil
 }
 
-// Close uploads the buffered data to Spectra, creating the file with actual data.
-// The fileID must be a "pending:" ID from CreateFile().
 func (swc *spectraWriteCloser) Close() error {
 	swc.mu.Lock()
 	defer swc.mu.Unlock()
@@ -388,36 +348,6 @@ func (swc *spectraWriteCloser) Close() error {
 	}
 	swc.closed = true
 
-	var data []byte
-	var err error
-
-	if swc.useTemp {
-		// Read from temp file
-		if swc.tempFile != nil {
-			// Seek to beginning
-			if _, err := swc.tempFile.Seek(0, 0); err != nil {
-				swc.tempFile.Close()
-				os.Remove(swc.tempFile.Name())
-				return fmt.Errorf("failed to seek temp file: %w", err)
-			}
-
-			// Read all data
-			data, err = io.ReadAll(swc.tempFile)
-			swc.tempFile.Close()
-			tempName := swc.tempFile.Name()
-			os.Remove(tempName) // Clean up temp file
-
-			if err != nil {
-				return fmt.Errorf("failed to read temp file: %w", err)
-			}
-		}
-	} else {
-		// Read from memory buffer
-		data = swc.buffer.Bytes()
-	}
-
-	// Parse the pending ID to get parentID and name
-	// Format: "pending:<parentID>:<name>"
 	if !strings.HasPrefix(swc.fileID, "pending:") {
 		return fmt.Errorf("invalid file ID format: expected pending ID, got %s", swc.fileID)
 	}
@@ -429,12 +359,17 @@ func (swc *spectraWriteCloser) Close() error {
 	parentID := parts[1]
 	name := parts[2]
 
-	// Create the file with actual data
+	// SDK requires non-empty Data but does not persist it; placeholder is enough.
+	placeholder := []byte{0}
+	if swc.accepted == 0 {
+		placeholder = []byte{0}
+	}
+
 	uploadErr := swc.spectraFS.withClassifiedRetry(context.Background(), "UploadFile", func() error {
 		_, innerErr := swc.spectraFS.fs.UploadFile(&sdk.UploadFileRequest{
 			ParentID:  parentID,
 			Name:      name,
-			Data:      data,
+			Data:      placeholder,
 			TableName: swc.spectraFS.world,
 		})
 		return innerErr
@@ -487,25 +422,6 @@ func (s *SpectraFS) RecordSignal(sig types.FSDegradationSignal) {
 	}
 }
 
-func (s *SpectraFS) recordDegradation(operation string, err error) {
-	if s.degradation == nil || err == nil {
-		return
-	}
-	class := ClassifySpectraError(err)
-	if class.Bucket != types.FSErrorThrottle {
-		return
-	}
-	s.recordDegradationSignal(types.FSDegradationRateLimit, operation, class.RetryAfter)
-}
-
-func rateLimitFromError(err error) (time.Duration, bool) {
-	class := ClassifySpectraError(err)
-	if class.Bucket == types.FSErrorThrottle {
-		return class.RetryAfter, true
-	}
-	return 0, false
-}
-
 // GetDegradationState returns the shared degradation tracker, if any.
 func (s *SpectraFS) GetDegradationState() *types.FSDegradationState {
 	return s.degradation
@@ -532,3 +448,10 @@ func (s *SpectraFS) ListChildrenPagination() types.ListChildrenPagination {
 		PreferLargePagesUnderThrottle: true,
 	}
 }
+
+var (
+	_ types.FSAdapter                = (*SpectraFS)(nil)
+	_ types.FSDegradationReporter    = (*SpectraFS)(nil)
+	_ types.FSListChildrenPagination = (*SpectraFS)(nil)
+	_ types.FSStorageInfo            = (*SpectraFS)(nil)
+)

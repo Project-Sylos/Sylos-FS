@@ -5,6 +5,6 @@
 
 package local
 
-func darwinVolumeType(path string) string {
+func darwinVolumeType(_ string) string {
 	return "fixed"
 }

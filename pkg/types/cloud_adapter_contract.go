@@ -18,9 +18,14 @@ type ClassifierFunc func(err error) FSErrorClassification
 //     (OAuth / Spectra auth). Refresh is opaque to Migration-Engine workers: the
 //     FS call blocks until refresh+retry succeeds or returns a classified auth error.
 //     LocalFS is the exception (no tokens / no Refresh).
-//  4. Embed or hold FSDegradationState; implement FSDegradationReporter.
+//  4. Embed or hold FSDegradationState; implement FSDegradationReporter including
+//     GetDegradationState() so ME can bridge RateLimitedUntil / TakeRecentHits
+//     (AIMD FS_THROTTLE + Progress Monitor rate-limit badge). Snapshot-only
+//     DegradationState()/RecordSignal is not enough.
 //  5. When src/dst share a backend instance, use one FSDegradationState for the group.
 //  6. Register ProviderID in Migration-Engine pkg/scaling/profile.go.
 //  7. Honor explicit RetryAfter from Classify — never downgrade to generic backoff only.
 //  8. Expose FSConcurrencyHint (ActiveWorkers) for ambiguous-error correlation.
+//  9. Implement FSStorageInfo (GetStorageInfo) — return Available=false when the
+//     provider has no portable free-space API (e.g. SFTP).
 type CloudAdapterChecklist struct{}

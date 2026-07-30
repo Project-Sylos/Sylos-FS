@@ -30,3 +30,11 @@ func TestFSDegradationStateRecordAndTake(t *testing.T) {
 		t.Fatalf("second TakeRecentHits = %d, want 0", got)
 	}
 }
+
+func TestFSDegradationReporterIncludesGetDegradationState(t *testing.T) {
+	s := NewFSDegradationState()
+	var r FSDegradationReporter = s
+	if r.GetDegradationState() != s {
+		t.Fatal("GetDegradationState must return the shared state pointer for ME rate-limit bridging")
+	}
+}

@@ -47,11 +47,29 @@ func TestClassifyBoxErrorNeedsRefresh(t *testing.T) {
 	}
 }
 
+func TestBoxFSExposesDegradationState(t *testing.T) {
+	st := types.NewFSDegradationState()
+	d := &BoxFS{session: &Session{degradation: st}}
+	if d.GetDegradationState() != st {
+		t.Fatal("GetDegradationState must expose session degradation for ME AIMD + UI")
+	}
+	d.RecordSignal(types.FSDegradationSignal{
+		Kind:       types.FSDegradationRateLimit,
+		RetryAfter: 2 * time.Second,
+		Operation:  "CreateFolder",
+		At:         time.Now(),
+	})
+	snap := d.DegradationState()
+	if snap.RateLimitedUntil.IsZero() || snap.RecentHits < 1 {
+		t.Fatalf("expected rate-limit signal on reporter: %+v", snap)
+	}
+}
+
 func TestParsePendingFileID(t *testing.T) {
-	id := pendingFileID("123", "report.pdf")
-	parent, name, ok := parsePendingFileID(id)
-	if !ok || parent != "123" || name != "report.pdf" {
-		t.Fatalf("parse failed: ok=%v parent=%q name=%q", ok, parent, name)
+	id := pendingFileID("123", "report.pdf", 99)
+	parent, name, size, ok := parsePendingFileID(id)
+	if !ok || parent != "123" || name != "report.pdf" || size != 99 {
+		t.Fatalf("parse failed: ok=%v parent=%q name=%q size=%d", ok, parent, name, size)
 	}
 }
 

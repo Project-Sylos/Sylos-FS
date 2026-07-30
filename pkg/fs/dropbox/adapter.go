@@ -361,6 +361,50 @@ func (d *DropboxFS) DeleteNode(ctx context.Context, nodeID string, nodeType stri
 	})
 }
 
+// RenameNode renames a Dropbox file or folder in place (files/move_v2).
+func (d *DropboxFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = nodeType
+	fromPath := strings.TrimSpace(serviceID)
+	newName = strings.TrimSpace(newName)
+	if fromPath == "" || newName == "" {
+		return types.RenameResult{}, fmt.Errorf("dropbox: rename requires service id and new name")
+	}
+	parent := strings.TrimSpace(parentServiceID)
+	if parent == "" {
+		parent = path.Dir(fromPath)
+	}
+	if parent == "." || parent == "/" {
+		parent = ""
+	}
+	toPath := path.Join(parent, newName)
+	if !strings.HasPrefix(toPath, "/") {
+		toPath = "/" + toPath
+	}
+	var out types.RenameResult
+	err := d.withClassifiedRetry(ctx, "RenameNode", func() error {
+		client, err := d.client(ctx)
+		if err != nil {
+			return err
+		}
+		meta, err := client.moveEntry(ctx, fromPath, toPath)
+		if err != nil {
+			return err
+		}
+		out = types.RenameResult{
+			ServiceID:   meta.PathDisplay,
+			DisplayName: newName,
+		}
+		if out.ServiceID == "" {
+			out.ServiceID = toPath
+		}
+		return nil
+	})
+	return out, err
+}
+
 func (d *DropboxFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	_ = ctx
 	logical, err := d.logicalCreatePath(parentID, name, metadata)
@@ -460,6 +504,7 @@ var (
 	_ types.FSDeleteBatch            = (*DropboxFS)(nil)
 	_ types.FSUploadFilesBatch       = (*DropboxFS)(nil)
 	_ types.FSTransferRestartPolicy  = (*DropboxFS)(nil)
+	_ types.FSStorageInfo            = (*DropboxFS)(nil)
 )
 
 // SupportsResumableTransfer reports whether Dropbox can continue from an offset in a

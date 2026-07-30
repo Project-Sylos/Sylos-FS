@@ -3,8 +3,11 @@
 
 package cloud
 
-// StoredCredentialsFromOAuth builds persisted credentials from a UI token POST.
-func StoredCredentialsFromOAuth(providerID, refreshToken, clientID, clientSecret string, scopes []string) StoredCredentials {
+import "codeberg.org/Sylos/Sylos-FS/pkg/fs/msgraph"
+
+// StoredCredentialsFromOAuthTenant builds persisted credentials from a UI token POST.
+// For OneDrive/SharePoint, empty microsoft tenant uses the multi-tenant "common" endpoint.
+func StoredCredentialsFromOAuthTenant(providerID, refreshToken, clientID, clientSecret string, scopes []string, microsoftTenantID string) StoredCredentials {
 	stored := StoredCredentials{
 		Provider:     providerID,
 		RefreshToken: refreshToken,
@@ -18,7 +21,7 @@ func StoredCredentialsFromOAuth(providerID, refreshToken, clientID, clientSecret
 	case ProviderDropbox:
 		stored.TokenURI = "https://api.dropboxapi.com/oauth2/token"
 	case ProviderOneDrive, ProviderSharePoint:
-		stored.TokenURI = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+		stored.TokenURI = msgraph.TokenURLForTenant(microsoftTenantID)
 	case ProviderBox:
 		stored.TokenURI = "https://api.box.com/oauth2/token"
 	}

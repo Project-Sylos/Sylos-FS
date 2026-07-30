@@ -211,6 +211,26 @@ func (c *Client) getCurrentAccount(ctx context.Context) (currentAccount, error) 
 	return out, err
 }
 
+type spaceUsage struct {
+	Used       int64           `json:"used"`
+	Allocation json.RawMessage `json:"allocation"`
+}
+
+// getSpaceUsage returns Dropbox account storage usage (users/get_space_usage).
+func (c *Client) getSpaceUsage(ctx context.Context) (used, allocated int64, err error) {
+	var out spaceUsage
+	if err := c.rpc(ctx, "users/get_space_usage", nil, &out); err != nil {
+		return 0, 0, err
+	}
+	var alloc struct {
+		Allocated int64 `json:"allocated"`
+	}
+	if len(out.Allocation) > 0 {
+		_ = json.Unmarshal(out.Allocation, &alloc)
+	}
+	return out.Used, alloc.Allocated, nil
+}
+
 type authenticatedAdminResult struct {
 	AdminProfile struct {
 		TeamMemberID string `json:"team_member_id"`
@@ -361,6 +381,18 @@ type deleteArg struct {
 
 func (c *Client) deleteEntry(ctx context.Context, path string) error {
 	return c.rpc(ctx, "files/delete_v2", deleteArg{Path: path}, nil)
+}
+
+func (c *Client) moveEntry(ctx context.Context, fromPath, toPath string) (fileMetadata, error) {
+	var resp struct {
+		Metadata fileMetadata `json:"metadata"`
+	}
+	err := c.rpc(ctx, "files/move_v2", map[string]any{
+		"from_path":  fromPath,
+		"to_path":    toPath,
+		"autorename": false,
+	}, &resp)
+	return resp.Metadata, err
 }
 
 func (c *Client) download(ctx context.Context, path string) (io.ReadCloser, error) {

@@ -54,17 +54,3 @@ func TestListChildren_notDirectory_returnsError(t *testing.T) {
 	}
 }
 
-func TestIsPseudoFSPath(t *testing.T) {
-	if !isPseudoFSPath("/proc") {
-		t.Error("/proc should match")
-	}
-	if !isPseudoFSPath("/proc/self") {
-		t.Error("/proc/self should match")
-	}
-	if !isPseudoFSPath("/sys/fs") {
-		t.Error("/sys/fs should match")
-	}
-	if isPseudoFSPath("/home/user") {
-		t.Error("/home/user should not match")
-	}
-}

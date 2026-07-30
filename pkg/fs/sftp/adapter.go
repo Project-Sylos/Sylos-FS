@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/credentials"
@@ -230,6 +232,37 @@ func (f *SftpFS) DeleteNode(ctx context.Context, nodeID string, nodeType string)
 	})
 }
 
+// RenameNode renames a remote SFTP path via Rename.
+func (f *SftpFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = nodeType
+	var out types.RenameResult
+	err := f.withClassifiedRetryCtx(ctx, "RenameNode", func() error {
+		from := normalizeRemotePath(serviceID)
+		if ok, _ := withinRoot(f.rootAbs, from); !ok {
+			return fmt.Errorf("sftp: rename outside root: %s", from)
+		}
+		parent := strings.TrimSpace(parentServiceID)
+		if parent == "" {
+			parent = path.Dir(from)
+		}
+		parent = normalizeRemotePath(parent)
+		to := path.Join(parent, newName)
+		to = normalizeRemotePath(to)
+		if ok, _ := withinRoot(f.rootAbs, to); !ok {
+			return fmt.Errorf("sftp: rename target outside root: %s", to)
+		}
+		if err := f.sftpClient().Rename(from, to); err != nil {
+			return err
+		}
+		out = types.RenameResult{ServiceID: to, DisplayName: newName}
+		return nil
+	})
+	return out, err
+}
+
 func (f *SftpFS) NormalizePath(path string) string {
 	return types.NormalizeLocationPath(path)
 }
@@ -254,6 +287,13 @@ func (f *SftpFS) DegradationState() types.FSDegradationSnapshot {
 		return types.FSDegradationSnapshot{}
 	}
 	return f.session.degradation.DegradationState()
+}
+
+func (f *SftpFS) GetDegradationState() *types.FSDegradationState {
+	if f.session == nil {
+		return nil
+	}
+	return f.session.degradation
 }
 
 func (f *SftpFS) RecordSignal(signal types.FSDegradationSignal) {
@@ -308,4 +348,5 @@ func (f *SftpFS) withClassifiedRetryCtx(ctx context.Context, operation string, o
 var (
 	_ types.FSDegradationReporter    = (*SftpFS)(nil)
 	_ types.FSListChildrenPagination = (*SftpFS)(nil)
+	_ types.FSStorageInfo            = (*SftpFS)(nil)
 )

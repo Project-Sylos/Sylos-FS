@@ -64,35 +64,20 @@ func dropboxErrorCode(apiErr *APIError) string {
 }
 
 func classifyDropboxAPIError(status int, code string) types.FSErrorClassification {
+	classCode := func(fallback string) string {
+		if code != "" {
+			return code
+		}
+		return fallback
+	}
 	switch status {
 	case http.StatusUnauthorized:
-		return retryable(code, "unauthorized")
+		return types.FSErrorClassification{Bucket: types.FSErrorRetryable, ErrorCode: classCode("unauthorized")}
 	case http.StatusTooManyRequests:
-		return throttle(code, "too_many_requests")
+		return types.FSErrorClassification{Bucket: types.FSErrorThrottle, ErrorCode: classCode("too_many_requests")}
 	default:
-		return fatal(code, code)
+		return types.FSErrorClassification{Bucket: types.FSErrorFatal, ErrorCode: code}
 	}
-}
-
-func fatal(tag, code string) types.FSErrorClassification {
-	if code == "" {
-		code = tag
-	}
-	return types.FSErrorClassification{Bucket: types.FSErrorFatal, ErrorCode: code}
-}
-
-func retryable(tag, code string) types.FSErrorClassification {
-	if code == "" {
-		code = tag
-	}
-	return types.FSErrorClassification{Bucket: types.FSErrorRetryable, ErrorCode: code}
-}
-
-func throttle(tag, code string) types.FSErrorClassification {
-	if code == "" {
-		code = tag
-	}
-	return types.FSErrorClassification{Bucket: types.FSErrorThrottle, ErrorCode: code}
 }
 
 func apiErrRetryAfter(apiErr *APIError) time.Duration {

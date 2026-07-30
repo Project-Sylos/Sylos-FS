@@ -286,11 +286,12 @@ func (d *DriveFS) ListChildrenPagination() types.ListChildrenPagination {
 var (
 	_ types.FSDegradationReporter = (*DriveFS)(nil)
 	_ types.FSListChildrenPagination = (*DriveFS)(nil)
+	_ types.FSStorageInfo         = (*DriveFS)(nil)
 )
 
 // RegisterCredentialsPayload builds stored credentials JSON from UI token POST.
 func RegisterCredentialsPayload(refreshToken, clientID, clientSecret string, scopes []string) ([]byte, error) {
-	stored := cloud.StoredCredentialsFromOAuth(cloud.ProviderGoogleDrive, refreshToken, clientID, clientSecret, scopes)
+	stored := cloud.StoredCredentialsFromOAuthTenant(cloud.ProviderGoogleDrive, refreshToken, clientID, clientSecret, scopes, "")
 	return json.Marshal(stored)
 }
 

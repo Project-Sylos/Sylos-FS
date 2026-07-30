@@ -74,6 +74,10 @@ func (d *OneDriveFS) OpenWrite(ctx context.Context, fileID string) (io.WriteClos
 	return d.ops.OpenWrite(ctx, fileID)
 }
 
+func (d *OneDriveFS) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
+	return d.ops.OpenWriteWithSize(ctx, fileID, size)
+}
+
 func (d *OneDriveFS) NormalizePath(p string) string { return d.ops.NormalizePath(p) }
 
 func (d *OneDriveFS) Initialize(masterKey []byte, connectionID string) error {
@@ -127,10 +131,11 @@ func (d *OneDriveFS) ListChildrenPagination() types.ListChildrenPagination {
 var (
 	_ types.FSDegradationReporter    = (*OneDriveFS)(nil)
 	_ types.FSListChildrenPagination = (*OneDriveFS)(nil)
+	_ types.FSStorageInfo            = (*OneDriveFS)(nil)
 )
 
 // RegisterCredentialsPayload builds stored credentials JSON from UI token POST.
 func RegisterCredentialsPayload(refreshToken, clientID, clientSecret string, scopes []string) ([]byte, error) {
-	stored := cloud.StoredCredentialsFromOAuth(cloud.ProviderOneDrive, refreshToken, clientID, clientSecret, scopes)
+	stored := cloud.StoredCredentialsFromOAuthTenant(cloud.ProviderOneDrive, refreshToken, clientID, clientSecret, scopes, "")
 	return json.Marshal(stored)
 }

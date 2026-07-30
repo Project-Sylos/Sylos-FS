@@ -50,7 +50,7 @@ func (f factory) ListRoots(ctx context.Context, session cloud.Session) ([]cloud.
 	if !ok {
 		return nil, fmt.Errorf("onedrive: invalid session type")
 	}
-	client, err := s.graphClient(ctx)
+	client, err := s.GraphClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -144,17 +144,17 @@ func (s *Session) ClearAccessToken() {
 
 func (s *Session) Degradation() *types.FSDegradationState { return s.degradation }
 
-func (s *Session) GraphClient(ctx context.Context) (*msgraph.Client, error) {
-	return s.graphClient(ctx)
-}
-
 func (s *Session) oauthConfig() *oauth2.Config {
+	tokenURL := msgraph.TokenURL
+	if s.stored.TokenURI != "" {
+		tokenURL = s.stored.TokenURI
+	}
 	return &oauth2.Config{
 		ClientID:     s.stored.ClientID,
 		ClientSecret: s.stored.ClientSecret,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  msgraph.AuthURL,
-			TokenURL: msgraph.TokenURL,
+			TokenURL: tokenURL,
 		},
 		Scopes: s.stored.Scopes,
 	}
@@ -189,7 +189,7 @@ func (s *Session) httpClient(ctx context.Context) (*http.Client, error) {
 	return oauth2.NewClient(ctx, src), nil
 }
 
-func (s *Session) graphClient(ctx context.Context) (*msgraph.Client, error) {
+func (s *Session) GraphClient(ctx context.Context) (*msgraph.Client, error) {
 	hc, err := s.httpClient(ctx)
 	if err != nil {
 		return nil, err
@@ -198,7 +198,7 @@ func (s *Session) graphClient(ctx context.Context) (*msgraph.Client, error) {
 }
 
 func (s *Session) ResolveAccountIdentity(ctx context.Context) (cloud.AccountIdentity, error) {
-	client, err := s.graphClient(ctx)
+	client, err := s.GraphClient(ctx)
 	if err != nil {
 		return cloud.AccountIdentity{}, err
 	}

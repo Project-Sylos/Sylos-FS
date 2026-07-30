@@ -67,7 +67,7 @@ func TestBrowseFolderUnknownRootType(t *testing.T) {
 }
 
 func TestBrowseRootDropboxUser(t *testing.T) {
-	f, err := BrowseRoot(Root{ID: "root", DriveID: "ns-home", DisplayName: "My Dropbox", RootType: RootTypeUserRoot})
+	f, err := BrowseFolder("root", RootTypeUserRoot, "ns-home")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +87,7 @@ func TestBrowseRootDropboxUserLegacyNamespaceID(t *testing.T) {
 }
 
 func TestBrowseRootTeamFolder(t *testing.T) {
-	f, err := BrowseRoot(Root{
-		ID:          "tf-123",
-		DisplayName: "Marketing",
-		RootType:    RootTypeTeamFolder,
-		DriveID:     "ns-team",
-	})
+	f, err := BrowseFolder("tf-123", RootTypeTeamFolder, "ns-team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,12 +97,7 @@ func TestBrowseRootTeamFolder(t *testing.T) {
 }
 
 func TestBrowseRootSharedFolder(t *testing.T) {
-	f, err := BrowseRoot(Root{
-		ID:          "sf-456",
-		DisplayName: "Shared",
-		RootType:    RootTypeSharedFolder,
-		DriveID:     "/shared/path",
-	})
+	f, err := BrowseFolder("sf-456", RootTypeSharedFolder, "/shared/path")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,10 +107,7 @@ func TestBrowseRootSharedFolder(t *testing.T) {
 }
 
 func TestBrowseRootSharedFolderNamespaceFallback(t *testing.T) {
-	f, err := BrowseRoot(Root{
-		ID:       "sf-789",
-		RootType: RootTypeSharedFolder,
-	})
+	f, err := BrowseFolder("sf-789", RootTypeSharedFolder, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +117,7 @@ func TestBrowseRootSharedFolderNamespaceFallback(t *testing.T) {
 }
 
 func TestBrowseRootTeamSpace(t *testing.T) {
-	f, err := BrowseRoot(Root{
-		ID:       "teamSpace",
-		DriveID:  "ns-root",
-		RootType: RootTypeTeamSpace,
-	})
+	f, err := BrowseFolder("teamSpace", RootTypeTeamSpace, "ns-root")
 	if err != nil {
 		t.Fatal(err)
 	}

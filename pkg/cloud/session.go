@@ -32,12 +32,6 @@ func ForbiddenMigrationRootIDs(providerID string) ([]string, error) {
 	return append([]string(nil), factory.ForbiddenMigrationRootIDs()...), nil
 }
 
-// ValidateMigrationRoot rejects provider virtual containers that are not real
-// filesystem roots. Real folders inside those containers remain valid.
-func ValidateMigrationRoot(providerID, rootID string) error {
-	return ValidateMigrationRootFolder(providerID, types.Folder{ServiceID: rootID})
-}
-
 // ValidateMigrationRootFolder rejects browse-only virtual containers by id or root type
 // (e.g. SharePoint sites with dynamic ids).
 func ValidateMigrationRootFolder(providerID string, root types.Folder) error {

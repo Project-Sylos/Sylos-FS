@@ -77,9 +77,11 @@ func newClient(httpClient *http.Client) *Client {
 }
 
 type User struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Login string `json:"login"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Login       string `json:"login"`
+	SpaceAmount int64  `json:"space_amount"`
+	SpaceUsed   int64  `json:"space_used"`
 }
 
 type Item struct {

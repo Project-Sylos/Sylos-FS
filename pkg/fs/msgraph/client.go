@@ -204,10 +204,20 @@ type DriveItem struct {
 
 // Drive is a Graph drive (document library / OneDrive).
 type Drive struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	DriveType string `json:"driveType"`
-	WebURL    string `json:"webUrl"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	DriveType string      `json:"driveType"`
+	WebURL    string      `json:"webUrl"`
+	Quota     *DriveQuota `json:"quota,omitempty"`
+}
+
+// DriveQuota is Graph drive storage quota.
+type DriveQuota struct {
+	Total     int64  `json:"total"`
+	Used      int64  `json:"used"`
+	Remaining int64  `json:"remaining"`
+	Deleted   int64  `json:"deleted"`
+	State     string `json:"state"`
 }
 
 // Site is a Graph site.
@@ -253,6 +263,15 @@ func (c *Client) GetDrive(ctx context.Context, drivePath string) (Drive, error) 
 	return d, err
 }
 
+// GetDriveQuota returns drive metadata including quota.
+func (c *Client) GetDriveQuota(ctx context.Context, drivePath string) (Drive, error) {
+	path := drivePath
+	if !strings.Contains(path, "?") {
+		path = path + "?$select=id,name,driveType,quota"
+	}
+	return c.GetDrive(ctx, path)
+}
+
 // GetItem returns a drive item.
 func (c *Client) GetItem(ctx context.Context, itemPath string) (DriveItem, error) {
 	var item DriveItem
@@ -277,30 +296,74 @@ func (c *Client) DeleteItem(ctx context.Context, itemPath string) error {
 	return c.DoJSON(ctx, http.MethodDelete, itemPath, nil, nil)
 }
 
-// OpenDownload returns a ReadCloser for item content (follows redirect / download URL).
+// OpenDownload returns a ReadCloser for item content.
+//
+// Graph serves bytes via a short-lived pre-authenticated URL (either
+// @microsoft.graph.downloadUrl or the Location of a /content redirect). That
+// URL must be fetched *without* an Authorization header. Using the oauth2
+// client to follow /content redirects re-attaches Bearer on the CDN hop and
+// Microsoft returns HTTP 401 Unauthenticated — while listing still works.
 func (c *Client) OpenDownload(ctx context.Context, itemPath string) (io.ReadCloser, error) {
 	item, err := c.GetItem(ctx, itemPath)
 	if err != nil {
 		return nil, err
 	}
 	if item.DownloadURL != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.DownloadURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		// Pre-authenticated download URLs must not send Authorization.
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 400 {
-			defer resp.Body.Close()
-			raw, _ := io.ReadAll(resp.Body)
-			return nil, parseAPIError(resp.StatusCode, raw, resp.Header)
-		}
-		return resp.Body, nil
+		return getPreauthURL(ctx, item.DownloadURL)
 	}
-	resp, err := c.DoRaw(ctx, http.MethodGet, itemPath+"/content", nil, "", nil)
+	downloadURL, body, err := c.contentDownloadURLOrBody(ctx, itemPath)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		return body, nil
+	}
+	return getPreauthURL(ctx, downloadURL)
+}
+
+// contentDownloadURLOrBody GETs .../content without following redirects.
+// A 3xx yields the pre-auth Location; a 200 returns the response body directly.
+func (c *Client) contentDownloadURLOrBody(ctx context.Context, itemPath string) (string, io.ReadCloser, error) {
+	hc := c.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	noRedirect := *hc
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolveURL(itemPath+"/content"), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc := strings.TrimSpace(resp.Header.Get("Location"))
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if loc == "" {
+			return "", nil, fmt.Errorf("msgraph: /content redirect missing Location (HTTP %d)", resp.StatusCode)
+		}
+		return loc, nil, nil
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return "", nil, parseAPIError(resp.StatusCode, raw, resp.Header)
+	}
+	return "", resp.Body, nil
+}
+
+// getPreauthURL fetches a Graph/SharePoint pre-authenticated download URL with no Bearer token.
+func getPreauthURL(ctx context.Context, downloadURL string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +422,48 @@ func (c *Client) PutContent(ctx context.Context, contentPath string, body io.Rea
 	return item, nil
 }
 
-// UploadSessionChunks uploads via an existing upload session URL.
+// PutUploadFragment PUTs one upload-session fragment.
+// total < 0 uses Content-Range "bytes start-end/*" (unknown length).
+// Returns completed=true when Graph responds 200/201 (file committed).
+func (c *Client) PutUploadFragment(ctx context.Context, uploadURL string, data []byte, offset, total int64) (DriveItem, bool, error) {
+	if len(data) == 0 {
+		return DriveItem{}, false, fmt.Errorf("msgraph: empty upload fragment")
+	}
+	end := offset + int64(len(data)) - 1
+	var rangeHdr string
+	if total < 0 {
+		rangeHdr = fmt.Sprintf("bytes %d-%d/*", offset, end)
+	} else {
+		rangeHdr = fmt.Sprintf("bytes %d-%d/%d", offset, end, total)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
+	if err != nil {
+		return DriveItem{}, false, err
+	}
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req.Header.Set("Content-Range", rangeHdr)
+	// Upload session URLs are pre-authenticated; use a client without Graph Authorization.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return DriveItem{}, false, err
+	}
+	raw, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return DriveItem{}, false, readErr
+	}
+	if resp.StatusCode >= 400 {
+		return DriveItem{}, false, parseAPIError(resp.StatusCode, raw, resp.Header)
+	}
+	var item DriveItem
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &item)
+	}
+	done := resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated
+	return item, done, nil
+}
+
+// UploadSessionChunks uploads via an existing upload session URL (ReaderAt helper).
 func (c *Client) UploadSessionChunks(ctx context.Context, uploadURL string, r io.ReaderAt, size int64) (DriveItem, error) {
 	if size < 0 {
 		return DriveItem{}, fmt.Errorf("msgraph: upload size required")
@@ -380,31 +484,13 @@ func (c *Client) UploadSessionChunks(ctx context.Context, uploadURL string, r io
 		if n == 0 {
 			break
 		}
-		end := offset + int64(n) - 1
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(buf[:n]))
+		it, done, err := c.PutUploadFragment(ctx, uploadURL, buf[:n], offset, size)
 		if err != nil {
 			return DriveItem{}, err
 		}
-		req.Header.Set("Content-Length", strconv.Itoa(n))
-		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end, size))
-		// Upload session URLs are pre-authenticated; use a client without Graph Authorization.
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return DriveItem{}, err
-		}
-		raw, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return DriveItem{}, readErr
-		}
-		if resp.StatusCode >= 400 {
-			return DriveItem{}, parseAPIError(resp.StatusCode, raw, resp.Header)
-		}
+		item = it
 		offset += int64(n)
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-			if len(raw) > 0 {
-				_ = json.Unmarshal(raw, &item)
-			}
+		if done {
 			return item, nil
 		}
 	}

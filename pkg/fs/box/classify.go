@@ -102,6 +102,7 @@ func (d *BoxFS) withClassifiedRetry(ctx context.Context, operation string, op fu
 				if errors.As(err, &apiErr) {
 					retry = d.throttleBackoff(apiErr)
 				}
+				// Always record so ME AIMD + UI see RateLimitedUntil (even without Retry-After).
 				d.recordDegradation(types.FSDegradationRateLimit, operation, retry)
 			},
 		},

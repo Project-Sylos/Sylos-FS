@@ -61,9 +61,14 @@ func TestItemPath(t *testing.T) {
 }
 
 func TestPendingFileID(t *testing.T) {
-	id := PendingFileID("parent", "name.txt")
-	parent, name, ok := ParsePendingFileID(id)
-	if !ok || parent != "parent" || name != "name.txt" {
-		t.Fatalf("parse %q -> %q %q %v", id, parent, name, ok)
+	id := PendingFileID("parent", "name.txt", 42)
+	parent, name, size, ok := ParsePendingFileID(id)
+	if !ok || parent != "parent" || name != "name.txt" || size != 42 {
+		t.Fatalf("parse %q -> %q %q %d %v", id, parent, name, size, ok)
+	}
+	legacy := "pending:parent:legacy.txt"
+	parent, name, size, ok = ParsePendingFileID(legacy)
+	if !ok || parent != "parent" || name != "legacy.txt" || size != -1 {
+		t.Fatalf("legacy parse %q -> %q %q %d %v", legacy, parent, name, size, ok)
 	}
 }

@@ -9,33 +9,13 @@ import (
 	"io"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/fs/ctxstream"
-	"codeberg.org/Sylos/Sylos-FS/pkg/fs/spill"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 const pendingFilePrefix = "pending:"
-
-func PendingFileID(parentID, name string) string {
-	if parentID == "" {
-		parentID = "root"
-	}
-	return fmt.Sprintf("%s%s:%s", pendingFilePrefix, parentID, name)
-}
-
-func ParsePendingFileID(fileID string) (parentID, name string, ok bool) {
-	if !strings.HasPrefix(fileID, pendingFilePrefix) {
-		return "", "", false
-	}
-	parts := strings.SplitN(fileID, ":", 3)
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return "", "", false
-	}
-	return parts[1], parts[2], true
-}
 
 // ItemToFolder maps a Graph driveItem folder to types.Folder.
 // ParentId carries the Graph drive id when known so browse can preserve drive context.
@@ -230,7 +210,7 @@ func (a *AdapterOps) CreateFile(ctx context.Context, parentID, name string, size
 	basePath := types.LogicalParentFromCreateMetadata(metadata, a.Root.LocationPath)
 	loc := types.ChildLocationFromCreateMetadata(metadata, basePath, name)
 	return types.File{
-		ServiceID:    PendingFileID(parentID, name),
+		ServiceID:    PendingFileID(parentID, name, size),
 		ParentId:     firstNonEmpty(a.EffectiveDriveID(), parentID),
 		ParentPath:   basePath,
 		DisplayName:  name,
@@ -242,7 +222,21 @@ func (a *AdapterOps) CreateFile(ctx context.Context, parentID, name string, size
 }
 
 func (a *AdapterOps) OpenWrite(ctx context.Context, fileID string) (io.WriteCloser, error) {
-	return NewWriter(a, ctx, fileID)
+	return a.OpenWriteWithSize(ctx, fileID, -1)
+}
+
+func (a *AdapterOps) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
+	w, err := NewWriter(a, ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if size >= 0 && w.declaredSize < 0 {
+		w.declaredSize = size
+		if size <= SimpleUploadMaxBytes {
+			w.simpleOnly = true
+		}
+	}
+	return w, nil
 }
 
 func (a *AdapterOps) NormalizePath(p string) string {
@@ -305,110 +299,5 @@ func (a *AdapterOps) recordDegradation(kind types.FSDegradationKind, operation s
 		RetryAfter: retryAfter,
 		Operation:  operation,
 		At:         time.Now(),
-	})
-}
-
-// Writer streams uploads via spill buffer then simple PUT or upload session.
-type Writer struct {
-	ops    *AdapterOps
-	ctx    context.Context
-	fileID string
-	parent string
-	name   string
-	create bool
-
-	mu     sync.Mutex
-	closed bool
-	spill  *spill.Writer
-}
-
-func NewWriter(ops *AdapterOps, ctx context.Context, fileID string) (*Writer, error) {
-	w := &Writer{
-		ops:    ops,
-		ctx:    ctx,
-		fileID: fileID,
-		spill:  spill.NewWriter(0),
-	}
-	if parent, name, ok := ParsePendingFileID(fileID); ok {
-		w.create = true
-		w.parent = parent
-		w.name = name
-	}
-	return w, nil
-}
-
-func (w *Writer) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return 0, fmt.Errorf("msgraph: writer closed")
-	}
-	return w.spill.Write(p)
-}
-
-func (w *Writer) Close() error {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil
-	}
-	w.closed = true
-	w.mu.Unlock()
-
-	size := w.spill.Size()
-	reader, size2, err := w.spill.ReaderAt()
-	if err != nil {
-		_ = w.spill.Close()
-		return err
-	}
-	if size2 >= 0 {
-		size = size2
-	}
-	defer w.spill.Close()
-
-	op := "UploadFile"
-	if w.create {
-		op = "CreateFileUpload"
-	}
-	return w.ops.WithClassifiedRetry(w.ctx, op, func() error {
-		client, err := w.ops.Client(w.ctx)
-		if err != nil {
-			return err
-		}
-		driveID := w.ops.EffectiveDriveID()
-		if size <= SimpleUploadMaxBytes {
-			var contentPath string
-			if w.create {
-				contentPath = PutContentByPath(driveID, w.parent, w.name)
-			} else {
-				contentPath = ContentPath(driveID, w.fileID)
-			}
-			_, err = client.PutContent(w.ctx, contentPath, io.NewSectionReader(reader, 0, size), size)
-			return err
-		}
-		var sessionPath string
-		var body any
-		if w.create {
-			sessionPath = CreateUploadSessionByPath(driveID, w.parent, w.name)
-			body = map[string]any{
-				"item": map[string]any{
-					"@microsoft.graph.conflictBehavior": "replace",
-					"name":                              w.name,
-				},
-			}
-		} else {
-			sessionPath = CreateUploadSessionPath(driveID, w.fileID)
-			body = map[string]any{
-				"item": map[string]any{
-					"@microsoft.graph.conflictBehavior": "replace",
-				},
-			}
-		}
-		uploadURL, err := client.CreateUploadSession(w.ctx, sessionPath, body)
-		if err != nil {
-			return err
-		}
-		_, err = client.UploadSessionChunks(w.ctx, uploadURL, reader, size)
-		return err
 	})
 }

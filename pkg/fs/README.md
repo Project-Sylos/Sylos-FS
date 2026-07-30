@@ -310,10 +310,9 @@ if err := dstWriter.Close(); err != nil {
 
 ### Implementation Details
 
-- **LocalFS**: `OpenRead` returns `*os.File`, `OpenWrite` returns `*os.File` opened in write mode
-- **SpectraFS**: `OpenRead` returns a reader over file data. `OpenWrite` buffers internally (memory for small files, temp file for large files) and uploads on `Close()`
-
-The buffering in SpectraFS is an implementation detail - the worker just sees a `WriteCloser`.
+- **LocalFS**: `OpenRead` / `OpenWrite` use OS file handles (direct streaming).
+- **Cloud (Dropbox, Drive, Box, Graph)**: stream upload sessions on `Write` / pipe; `Close` finishes the session.
+- **SpectraFS**: `OpenWrite` accepts the stream without local staging (SDK does not persist upload bytes).
 
 ## Service Manager
 
@@ -580,9 +579,9 @@ Filesystem adapters (`LocalFS` and `SpectraFS`) are not thread-safe by themselve
 - **Pagination**: Use appropriate page sizes (50-100 items) to balance memory and network usage
 - **Path normalization**: Path normalization is done automatically but has minimal overhead
 - **Concurrent access**: ServiceManager operations are safe for concurrent use
-- **Streaming for large files**: FS adapters handle buffering internally - use `io.CopyBuffer` with appropriate buffer sizes in worker code
-- **Buffer size**: Use `fs.GetCopyBuffer()` helper function for optimal buffer sizes. Default is 8MB, but you can specify a custom size. For high-performance scenarios, 64MB buffers may be appropriate.
-- **Spectra buffering**: SpectraFS automatically spills to temp files for files larger than 10MB
+- **Streaming for large files**: adapters must stream on `Write` (no full-file temp spill); workers use a small copy buffer and beat progress on each chunk
+- **Buffer size**: ME copy workers use a modest default buffer (tens of KiB). Prefer streaming adapters over huge staging buffers.
+- **Spectra streaming**: SpectraFS `OpenWrite` accepts the byte stream without local staging (SDK does not persist upload bytes)
 
 ### Copy Buffer Configuration
 

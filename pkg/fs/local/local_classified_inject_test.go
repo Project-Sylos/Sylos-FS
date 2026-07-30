@@ -24,7 +24,7 @@ func TestListChildrenInjectedEIOAmbiguousPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.clearInject)
+	t.Cleanup(func() { l.injectBeforeOp = nil })
 
 	l.SetActiveWorkers(8)
 	now := time.Now()
@@ -33,7 +33,7 @@ func TestListChildrenInjectedEIOAmbiguousPromotion(t *testing.T) {
 		tr.Record("ListChildren", "EIO", 8, now.Add(time.Duration(i)*10*time.Millisecond))
 	}
 
-	l.InjectBeforeOp(func(operation string, attempt int) error {
+	l.injectBeforeOp = func(operation string, attempt int) error {
 		if operation != "ListChildren" {
 			return nil
 		}
@@ -41,14 +41,16 @@ func TestListChildrenInjectedEIOAmbiguousPromotion(t *testing.T) {
 			return fmt.Errorf("read dir: %w", syscall.EIO)
 		}
 		return nil
-	})
+	}
 
 	_, err = l.ListChildren(context.Background(), dir, nil, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.degradation.TakeRecentHits() == 0 {
-		t.Fatal("expected degradation hits after suspected throttle promotion")
+	// One promoted errno must count as one degradation hit, not one suspected plus
+	// one hard rate_limit from the shared throttle sleep path.
+	if hits := l.degradation.TakeRecentHits(); hits != 1 {
+		t.Fatalf("hits=%d want 1 after a single suspected throttle promotion", hits)
 	}
 }
 
@@ -58,16 +60,16 @@ func TestListChildrenInjectedFatalNoRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.clearInject)
+	t.Cleanup(func() { l.injectBeforeOp = nil })
 
 	var calls int
-	l.InjectBeforeOp(func(operation string, attempt int) error {
+	l.injectBeforeOp = func(operation string, attempt int) error {
 		if operation == "ListChildren" {
 			calls++
 			return syscall.EACCES
 		}
 		return nil
-	})
+	}
 
 	_, err = l.ListChildren(context.Background(), dir, nil, "/")
 	if err == nil {
@@ -84,10 +86,10 @@ func TestCreateFolderClassifiedRetryTransient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.clearInject)
+	t.Cleanup(func() { l.injectBeforeOp = nil })
 
 	var calls int
-	l.InjectBeforeOp(func(operation string, attempt int) error {
+	l.injectBeforeOp = func(operation string, attempt int) error {
 		if operation != "CreateFolder" {
 			return nil
 		}
@@ -96,7 +98,7 @@ func TestCreateFolderClassifiedRetryTransient(t *testing.T) {
 			return fmt.Errorf("mkdir: %w", syscall.EIO)
 		}
 		return nil
-	})
+	}
 
 	sub := filepath.Join(dir, "sub")
 	_, err = l.CreateFolder(context.Background(), dir, "sub", nil)
@@ -121,10 +123,10 @@ func TestOpenWriteUsesClassifiedRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(l.clearInject)
+	t.Cleanup(func() { l.injectBeforeOp = nil })
 
 	var calls int
-	l.InjectBeforeOp(func(operation string, attempt int) error {
+	l.injectBeforeOp = func(operation string, attempt int) error {
 		if operation != "OpenWrite" {
 			return nil
 		}
@@ -133,7 +135,7 @@ func TestOpenWriteUsesClassifiedRetry(t *testing.T) {
 			return syscall.EAGAIN
 		}
 		return nil
-	})
+	}
 
 	wc, err := l.OpenWrite(context.Background(), p)
 	if err != nil {
