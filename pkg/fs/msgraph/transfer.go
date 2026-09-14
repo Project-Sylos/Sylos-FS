@@ -111,6 +111,55 @@ func (w *Writer) Close() error {
 	return w.flushSessionChunksLocked(true)
 }
 
+// Suspend stops without finalizing the upload session (scale-down abandon).
+// Partial fragments already PUT remain; the session URL is reused via ResumeToken.
+func (w *Writer) Suspend() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	w.buf = nil
+	return nil
+}
+
+// ResumeToken returns the Graph uploadUrl when a session has been started.
+func (w *Writer) ResumeToken() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.uploadURL
+}
+
+// ByteOffset returns bytes successfully uploaded in this writer (fragment-aligned).
+func (w *Writer) ByteOffset() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.offset
+}
+
+// NewWriterFromResumeToken continues an existing Graph upload session.
+func NewWriterFromResumeToken(ops *AdapterOps, ctx context.Context, uploadURL string, offset, declaredSize int64) (*Writer, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if uploadURL == "" {
+		return nil, fmt.Errorf("msgraph: empty resume token")
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	w := &Writer{
+		ops:            ops,
+		ctx:            ctx,
+		declaredSize:   declaredSize,
+		offset:         offset,
+		uploadURL:      uploadURL,
+		sessionStarted: true,
+	}
+	return w, nil
+}
+
 func (w *Writer) simplePutLocked() error {
 	data := w.buf
 	w.buf = nil

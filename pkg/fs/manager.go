@@ -697,6 +697,26 @@ func (m *ServiceManager) ListDrives(ctx context.Context, serviceID string) ([]ty
 	return local.ListDrives()
 }
 
+// GetHomeFolder returns the process user's home directory for local browse defaults.
+// serviceID can be "local" (virtual) or a concrete local service ID.
+func (m *ServiceManager) GetHomeFolder(ctx context.Context, serviceID string) (types.Folder, error) {
+	if serviceID == "local" {
+		if !m.hasLocalService() {
+			return types.Folder{}, fmt.Errorf("no local filesystem services configured")
+		}
+		return local.HomeFolder()
+	}
+
+	def, err := m.GetServiceDefinition(serviceID)
+	if err != nil {
+		return types.Folder{}, err
+	}
+	if def.Type != types.ServiceTypeLocal {
+		return types.Folder{}, types.ErrHomeUnsupported
+	}
+	return local.HomeFolder()
+}
+
 // MountDrive mounts a local block device and returns the updated drive descriptor.
 func (m *ServiceManager) MountDrive(ctx context.Context, serviceID, devicePath string) (types.DriveInfo, error) {
 	if serviceID == "local" {

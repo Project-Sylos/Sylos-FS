@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/optimeout"
 )
 
 const (
@@ -99,6 +102,12 @@ func (c *Client) DoRaw(ctx context.Context, method, pathOrURL string, body io.Re
 }
 
 func (c *Client) do(ctx context.Context, method, pathOrURL string, reqBody any, respBody any, closeBody bool) (*http.Response, error) {
+	// Bound metadata RPCs only. Streaming downloads keep the caller ctx (no overall file deadline).
+	if respBody != nil || closeBody {
+		var cancel context.CancelFunc
+		ctx, cancel = optimeout.Bound(ctx, optimeout.RPC)
+		defer cancel()
+	}
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -296,6 +305,14 @@ func (c *Client) DeleteItem(ctx context.Context, itemPath string) error {
 	return c.DoJSON(ctx, http.MethodDelete, itemPath, nil, nil)
 }
 
+// UpdateItemName patches a drive item's display name in place.
+func (c *Client) UpdateItemName(ctx context.Context, itemPath, name string) (DriveItem, error) {
+	body := map[string]any{"name": name}
+	var item DriveItem
+	err := c.DoJSON(ctx, http.MethodPatch, itemPath, body, &item)
+	return item, err
+}
+
 // OpenDownload returns a ReadCloser for item content.
 //
 // Graph serves bytes via a short-lived pre-authenticated URL (either
@@ -391,6 +408,53 @@ func (c *Client) CreateUploadSession(ctx context.Context, createPath string, bod
 	return sess.UploadURL, nil
 }
 
+// GetUploadSessionNextOffset GETs an upload session URL and returns the first
+// nextExpectedRanges start offset (authoritative resume point). hintOffset is used
+// when the response has no ranges.
+func (c *Client) GetUploadSessionNextOffset(ctx context.Context, uploadURL string, hintOffset int64) (int64, error) {
+	if uploadURL == "" {
+		return 0, fmt.Errorf("msgraph: empty uploadUrl")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uploadURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	// Upload session URLs are pre-authenticated.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	raw, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return 0, readErr
+	}
+	if resp.StatusCode >= 400 {
+		return 0, parseAPIError(resp.StatusCode, raw, resp.Header)
+	}
+	var status struct {
+		NextExpectedRanges []string `json:"nextExpectedRanges"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &status)
+	}
+	if len(status.NextExpectedRanges) == 0 {
+		if hintOffset < 0 {
+			return 0, nil
+		}
+		return hintOffset, nil
+	}
+	startStr, _, _ := strings.Cut(status.NextExpectedRanges[0], "-")
+	n, err := strconv.ParseInt(strings.TrimSpace(startStr), 10, 64)
+	if err != nil {
+		if hintOffset < 0 {
+			return 0, nil
+		}
+		return hintOffset, nil
+	}
+	return n, nil
+}
+
 // PutContent uploads a small file with a single PUT.
 func (c *Client) PutContent(ctx context.Context, contentPath string, body io.Reader, size int64) (DriveItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resolveURL(contentPath), body)
@@ -429,6 +493,32 @@ func (c *Client) PutUploadFragment(ctx context.Context, uploadURL string, data [
 	if len(data) == 0 {
 		return DriveItem{}, false, fmt.Errorf("msgraph: empty upload fragment")
 	}
+	type fragOut struct {
+		item DriveItem
+		done bool
+	}
+	out, err := optimeout.DoChunkIf(ctx, int64(len(data)), isTransientUploadErr, func(cctx context.Context) (fragOut, error) {
+		item, done, err := c.putUploadFragmentOnce(cctx, uploadURL, data, offset, total)
+		return fragOut{item: item, done: done}, err
+	})
+	if err != nil {
+		return DriveItem{}, false, err
+	}
+	return out.item, out.done, nil
+}
+
+func isTransientUploadErr(parent context.Context, err error) bool {
+	if optimeout.IsTransient(parent, err) {
+		return true
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return optimeout.SoftHTTP(apiErr.Status)
+	}
+	return false
+}
+
+func (c *Client) putUploadFragmentOnce(ctx context.Context, uploadURL string, data []byte, offset, total int64) (DriveItem, bool, error) {
 	end := offset + int64(len(data)) - 1
 	var rangeHdr string
 	if total < 0 {

@@ -142,12 +142,14 @@ func (w *driveWriter) streamUpload(body io.Reader) error {
 	if testStreamUploadHook != nil {
 		return testStreamUploadHook(w, body)
 	}
-	srv, err := w.dfs.session.driveService(w.ctx)
+	srv, err := w.dfs.session.uploadDriveService(w.ctx)
 	if err != nil {
 		return err
 	}
+	const driveUploadChunk = 16 << 20
 	mediaOpts := []googleapi.MediaOption{
 		googleapi.ContentType("application/octet-stream"),
+		googleapi.ChunkSize(driveUploadChunk),
 	}
 	var apiErr error
 	if w.create {

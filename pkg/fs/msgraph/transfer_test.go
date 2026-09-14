@@ -41,3 +41,16 @@ func TestPutUploadFragmentRangeUnknown(t *testing.T) {
 		t.Fatalf("chunk span mismatch")
 	}
 }
+
+func TestNewWriterFromResumeTokenKeepsDeclaredSize(t *testing.T) {
+	w, err := NewWriterFromResumeToken(nil, nil, "https://example/upload", 320*1024, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.declaredSize != 10<<20 {
+		t.Fatalf("declaredSize=%d want %d", w.declaredSize, 10<<20)
+	}
+	if w.offset != 320*1024 || !w.sessionStarted {
+		t.Fatalf("offset/session: offset=%d started=%v", w.offset, w.sessionStarted)
+	}
+}

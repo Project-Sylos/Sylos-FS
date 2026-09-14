@@ -5,10 +5,14 @@ package types
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path"
 	"strings"
 )
+
+// ErrHomeUnsupported is returned when a service cannot expose a process home folder.
+var ErrHomeUnsupported = errors.New("home directory is only available for local filesystem services")
 
 const (
 	NodeTypeFile   = "file"
@@ -205,8 +209,9 @@ func NewServiceContext(name string, adapter FSAdapter) *ServiceContext {
 
 // NormalizeLocationPath ensures logical paths always use forward slashes, are rooted,
 // and collapse redundant separators. Empty paths normalize to "/".
+// Leading/trailing spaces in path segments are preserved so destination-name checks
+// (GPL) can see the real basename; do not TrimSpace here.
 func NormalizeLocationPath(p string) string {
-	p = strings.TrimSpace(p)
 	if p == "" {
 		return "/"
 	}
@@ -224,8 +229,8 @@ func NormalizeLocationPath(p string) string {
 // ListChildrenBasePath picks the migration root-relative parent for child LocationPath construction.
 // Prefer the caller-supplied parentPath (current folder being listed); fall back to migration root.
 func ListChildrenBasePath(rootLocationPath, parentPath string) string {
-	if pp := strings.TrimSpace(parentPath); pp != "" {
-		return NormalizeLocationPath(pp)
+	if parentPath != "" {
+		return NormalizeLocationPath(parentPath)
 	}
 	return NormalizeLocationPath(rootLocationPath)
 }
@@ -234,7 +239,7 @@ func ListChildrenBasePath(rootLocationPath, parentPath string) string {
 // responses when metadata carries location_path or parent_path (copy/ME convention).
 func LogicalParentFromCreateMetadata(metadata map[string]string, fallback string) string {
 	if metadata != nil {
-		if loc := strings.TrimSpace(metadata["location_path"]); loc != "" {
+		if loc := metadata["location_path"]; loc != "" {
 			loc = NormalizeLocationPath(loc)
 			dir := path.Dir(loc)
 			if dir == "." || dir == "" {
@@ -242,7 +247,7 @@ func LogicalParentFromCreateMetadata(metadata map[string]string, fallback string
 			}
 			return NormalizeLocationPath(dir)
 		}
-		if pp := strings.TrimSpace(metadata["parent_path"]); pp != "" {
+		if pp := metadata["parent_path"]; pp != "" {
 			return NormalizeLocationPath(pp)
 		}
 	}
@@ -253,7 +258,7 @@ func LogicalParentFromCreateMetadata(metadata map[string]string, fallback string
 // responses when metadata carries location_path; otherwise joins parentPath and name.
 func ChildLocationFromCreateMetadata(metadata map[string]string, parentPath, name string) string {
 	if metadata != nil {
-		if loc := strings.TrimSpace(metadata["location_path"]); loc != "" {
+		if loc := metadata["location_path"]; loc != "" {
 			return NormalizeLocationPath(loc)
 		}
 	}
@@ -267,7 +272,6 @@ func ChildLocationFromCreateMetadata(metadata map[string]string, parentPath, nam
 // NormalizeParentPath normalizes stored parent_path strings but preserves empty values
 // (used by root nodes which have no parent).
 func NormalizeParentPath(p string) string {
-	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
 	}

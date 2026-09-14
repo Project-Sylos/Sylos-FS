@@ -111,6 +111,13 @@ func (d *SharePointFS) DeleteNode(ctx context.Context, nodeID, nodeType string) 
 	return d.ops.DeleteNode(ctx, nodeID, nodeType)
 }
 
+func (d *SharePointFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if d.ops.Ctx.RootType == cloud.RootTypeSharePointSite {
+		return types.RenameResult{}, fmt.Errorf("sharepoint: rename under a site container is not supported")
+	}
+	return d.ops.RenameNode(ctx, parentServiceID, serviceID, newName, nodeType)
+}
+
 func (d *SharePointFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	if d.ops.Ctx.RootType == cloud.RootTypeSharePointSite {
 		return types.File{}, fmt.Errorf("sharepoint: create file under a site is not supported; open a document library first")
@@ -124,6 +131,13 @@ func (d *SharePointFS) OpenWrite(ctx context.Context, fileID string) (io.WriteCl
 
 func (d *SharePointFS) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
 	return d.ops.OpenWriteWithSize(ctx, fileID, size)
+}
+
+func (d *SharePointFS) SupportsResumableTransfer() bool  { return d.ops.SupportsResumableTransfer() }
+func (d *SharePointFS) RequiresDeleteBeforeRestart() bool { return d.ops.RequiresDeleteBeforeRestart() }
+
+func (d *SharePointFS) OpenWriteFromResumeToken(ctx context.Context, token string, hintOffset, size int64) (io.WriteCloser, int64, error) {
+	return d.ops.OpenWriteFromResumeToken(ctx, token, hintOffset, size)
 }
 
 func (d *SharePointFS) NormalizePath(p string) string { return d.ops.NormalizePath(p) }
@@ -180,6 +194,8 @@ var (
 	_ types.FSDegradationReporter    = (*SharePointFS)(nil)
 	_ types.FSListChildrenPagination = (*SharePointFS)(nil)
 	_ types.FSStorageInfo            = (*SharePointFS)(nil)
+	_ types.FSTransferRestartPolicy  = (*SharePointFS)(nil)
+	_ types.FSResumeTokenWrite       = (*SharePointFS)(nil)
 )
 
 // RegisterCredentialsPayload builds stored credentials JSON from UI token POST.

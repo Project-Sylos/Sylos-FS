@@ -253,11 +253,7 @@ func (d *DropboxFS) CreateFolderBatch(ctx context.Context, items []types.CreateF
 				out[i].Err = fmt.Errorf("dropbox: decode success metadata: %w", err)
 				continue
 			}
-			base := basePaths[i]
-			if items[i].Metadata == nil || (strings.TrimSpace(items[i].Metadata["location_path"]) == "" && strings.TrimSpace(items[i].Metadata["parent_path"]) == "") {
-				base = folderBasePath(meta, base)
-			}
-			out[i].Folder = d.metaToFolder(meta, base)
+			out[i].Folder = d.metaToFolder(meta, folderBasePath(meta, basePaths[i]))
 		default:
 			out[i].Err = batchEntryFailureError(entry)
 		}
@@ -445,11 +441,7 @@ func (d *DropboxFS) UploadFilesBatch(ctx context.Context, items []types.UploadFi
 				out[i].Err = fmt.Errorf("dropbox: decode success metadata: %w", err)
 				continue
 			}
-			base := basePaths[i]
-			if items[i].Metadata == nil || (strings.TrimSpace(items[i].Metadata["location_path"]) == "" && strings.TrimSpace(items[i].Metadata["parent_path"]) == "") {
-				base = folderBasePath(meta, base)
-			}
-			out[i].File = d.metaToFile(meta, base)
+			out[i].File = d.metaToFile(meta, folderBasePath(meta, basePaths[i]))
 		default:
 			out[i].Err = batchEntryFailureError(entry)
 		}

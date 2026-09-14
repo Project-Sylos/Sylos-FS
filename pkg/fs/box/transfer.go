@@ -206,6 +206,8 @@ func (w *boxWriter) streamChunked(client *Client, body io.Reader) error {
 	if commitURL == "" {
 		commitURL = uploadHost + "/files/upload_sessions/" + url.PathEscape(sess.ID) + "/commit"
 	}
+	abortURL := sess.SessionEndpoints.Abort
+	abort := func() { _ = client.AbortUploadSession(w.ctx, abortURL) }
 
 	h := sha1.New()
 	var parts []uploadPart
@@ -218,6 +220,7 @@ func (w *boxWriter) streamChunked(client *Client, body io.Reader) error {
 		}
 		n, readErr := io.ReadFull(body, buf[:need])
 		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			abort()
 			return readErr
 		}
 		if n == 0 {
@@ -225,10 +228,12 @@ func (w *boxWriter) streamChunked(client *Client, body io.Reader) error {
 		}
 		chunk := buf[:n]
 		if _, err := h.Write(chunk); err != nil {
+			abort()
 			return err
 		}
-		part, err := client.UploadSessionPart(w.ctx, uploadURL, chunk, offset, w.size)
+		part, err := client.uploadSessionPartWithRetry(w.ctx, uploadURL, chunk, offset, w.size)
 		if err != nil {
+			abort()
 			return err
 		}
 		parts = append(parts, part)
@@ -237,9 +242,17 @@ func (w *boxWriter) streamChunked(client *Client, body io.Reader) error {
 			break
 		}
 	}
+	if offset != w.size {
+		abort()
+		return fmt.Errorf("box: uploaded %d bytes but declared size %d", offset, w.size)
+	}
 	contentSHA1 := base64.StdEncoding.EncodeToString(h.Sum(nil))
-	_, err = client.CommitUploadSession(w.ctx, commitURL, parts, contentSHA1)
-	return err
+	_, err = client.commitUploadSessionWithRetry(w.ctx, commitURL, parts, contentSHA1)
+	if err != nil {
+		abort()
+		return err
+	}
+	return nil
 }
 
 var _ io.WriteCloser = (*boxWriter)(nil)

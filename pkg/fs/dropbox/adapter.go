@@ -243,74 +243,53 @@ func (d *DropboxFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser,
 	return rc, err
 }
 
-func (d *DropboxFS) normalizeParentForCreate(parentID string) string {
+// createUnderNamespaceRoot is true when parent is the account / Path-Root namespace root
+// (wire path "/name"), not a concrete Dropbox folder id.
+func (d *DropboxFS) createUnderNamespaceRoot(parentID string) bool {
 	parentID = strings.TrimSpace(parentID)
-	if parentID == "" || parentID == "root" || parentID == d.root.ServiceID {
-		return ""
+	if parentID == "" || parentID == "root" || parentID == "teamSpace" {
+		return true
 	}
-	if isVirtualRootType(d.ctx.RootType) && parentID == d.ctx.NamespaceID {
-		return ""
+	if parentID == d.ctx.NamespaceID {
+		return true
 	}
-	return parentID
+	if parentID != d.root.ServiceID {
+		return false
+	}
+	// Nested migration root keeps Type=folder and a real Dropbox id — use id:root/name.
+	if isVirtualRootType(d.root.Type) {
+		return true
+	}
+	sid := strings.TrimSpace(d.root.ServiceID)
+	return sid == "" || sid == "root" || sid == "teamSpace"
 }
 
-func (d *DropboxFS) sharedRootPath() string {
-	if root := strings.TrimSpace(d.ctx.RootPath); root != "" && strings.HasPrefix(root, "/") {
-		return root
+// dropboxChildUnderParent builds Dropbox PathOrId relative form: id:<parent>/<name>
+// (or /parent/name if parent is already a path string).
+func dropboxChildUnderParent(parentID, name string) string {
+	parent := dropboxPathRef(parentID)
+	if strings.HasPrefix(parent, "/") {
+		return path.Join(parent, name)
 	}
-	ref := d.listPath("")
-	if strings.HasPrefix(ref, "/") {
-		return ref
-	}
-	return ""
+	return parent + "/" + name
 }
 
-// resolveLocationPath maps a migration root-relative path to a Dropbox API path.
-func (d *DropboxFS) resolveLocationPath(locationPath string) string {
-	loc := types.NormalizeLocationPath(locationPath)
-	if loc == "" || loc == "/" {
-		if root := d.sharedRootPath(); root != "" && root != "/" {
-			return root
-		}
-		return loc
-	}
-	if root := d.sharedRootPath(); root != "" && root != "/" {
-		if !strings.HasPrefix(loc, root+"/") && loc != root {
-			return path.Join(root, strings.TrimPrefix(loc, "/"))
-		}
-	}
-	return loc
-}
-
-// createAPIPath builds the Dropbox wire path for a new folder/file from migration-relative
-// location metadata (or adapter-root create). Dropbox create_folder/upload require a path
-// string; we never resolve parent ids via get_metadata here — missing path info is fatal.
-func (d *DropboxFS) createAPIPath(parentID, name string, metadata map[string]string) (string, error) {
-	logical, err := d.logicalCreatePath(parentID, name, metadata)
-	if err != nil {
-		return "", err
-	}
-	return d.resolveLocationPath(logical), nil
-}
-
-func (d *DropboxFS) logicalCreatePath(parentID, name string, metadata map[string]string) (string, error) {
+// createAPIPath builds the Dropbox wire path for create_folder / upload commit.
+// Uses id:<parent>/<basename> for folder parents; /<basename> at account/namespace roots.
+// Migration location_path / parent_path metadata is ignored (often Sylos id_path, not Dropbox).
+func (d *DropboxFS) createAPIPath(parentID, name string, _ map[string]string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("dropbox: create requires a name")
 	}
-	if metadata != nil {
-		if loc := strings.TrimSpace(metadata["location_path"]); loc != "" {
-			return types.NormalizeLocationPath(loc), nil
-		}
-		if pp := strings.TrimSpace(metadata["parent_path"]); pp != "" {
-			return types.ChildLocationFromCreateMetadata(nil, pp, name), nil
-		}
+	if strings.Contains(name, "/") || name == "." || name == ".." {
+		return "", fmt.Errorf("dropbox: create name %q must be a single path segment", name)
 	}
-	parentID = d.normalizeParentForCreate(parentID)
-	if isDropboxRootRef(parentID) || parentID == "" {
-		return types.NormalizeLocationPath("/" + name), nil
+	parentID = strings.TrimSpace(parentID)
+	if d.createUnderNamespaceRoot(parentID) {
+		return "/" + name, nil
 	}
-	return "", fmt.Errorf("dropbox: create requires location_path (or root parent); refusing id-only parent %q", parentID)
+	return dropboxChildUnderParent(parentID, name), nil
 }
 
 func (d *DropboxFS) CreateFolder(ctx context.Context, parentId, name string, metadata map[string]string) (types.Folder, error) {
@@ -335,9 +314,7 @@ func (d *DropboxFS) CreateFolder(ctx context.Context, parentId, name string, met
 			return err
 		}
 		basePath := types.LogicalParentFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath))
-		if metadata == nil || (strings.TrimSpace(metadata["location_path"]) == "" && strings.TrimSpace(metadata["parent_path"]) == "") {
-			basePath = folderBasePath(meta, basePath)
-		}
+		basePath = folderBasePath(meta, basePath)
 		out = d.metaToFolder(meta, basePath)
 		return nil
 	})
@@ -367,21 +344,20 @@ func (d *DropboxFS) RenameNode(ctx context.Context, parentServiceID, serviceID, 
 		ctx = context.Background()
 	}
 	_ = nodeType
-	fromPath := strings.TrimSpace(serviceID)
+	fromPath := dropboxPathRef(serviceID)
 	newName = strings.TrimSpace(newName)
 	if fromPath == "" || newName == "" {
 		return types.RenameResult{}, fmt.Errorf("dropbox: rename requires service id and new name")
 	}
+	if strings.Contains(newName, "/") || newName == "." || newName == ".." {
+		return types.RenameResult{}, fmt.Errorf("dropbox: rename name %q must be a single path segment", newName)
+	}
 	parent := strings.TrimSpace(parentServiceID)
-	if parent == "" {
-		parent = path.Dir(fromPath)
-	}
-	if parent == "." || parent == "/" {
-		parent = ""
-	}
-	toPath := path.Join(parent, newName)
-	if !strings.HasPrefix(toPath, "/") {
-		toPath = "/" + toPath
+	var toPath string
+	if parent == "" || d.createUnderNamespaceRoot(parent) {
+		toPath = "/" + newName
+	} else {
+		toPath = dropboxChildUnderParent(parent, newName)
 	}
 	var out types.RenameResult
 	err := d.withClassifiedRetry(ctx, "RenameNode", func() error {
@@ -394,7 +370,7 @@ func (d *DropboxFS) RenameNode(ctx context.Context, parentServiceID, serviceID, 
 			return err
 		}
 		out = types.RenameResult{
-			ServiceID:   meta.PathDisplay,
+			ServiceID:   meta.ID,
 			DisplayName: newName,
 		}
 		if out.ServiceID == "" {
@@ -407,26 +383,23 @@ func (d *DropboxFS) RenameNode(ctx context.Context, parentServiceID, serviceID, 
 
 func (d *DropboxFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	_ = ctx
-	logical, err := d.logicalCreatePath(parentID, name, metadata)
+	wire, err := d.createAPIPath(parentID, name, metadata)
 	if err != nil {
 		return types.File{}, err
 	}
-	parentID = d.normalizeParentForCreate(parentID)
-	if parentID == "" {
-		if ref := d.listPath(""); ref != "" && strings.HasPrefix(ref, "/") {
-			parentID = ref
+	parentStored := strings.TrimSpace(parentID)
+	if d.createUnderNamespaceRoot(parentStored) {
+		parentStored = strings.TrimSpace(d.root.ServiceID)
+		if parentStored == "" {
+			parentStored = "root"
 		}
 	}
-	parentPath := path.Dir(logical)
-	if parentPath == "." || parentPath == "" {
-		parentPath = "/"
-	}
 	return types.File{
-		ServiceID:    pendingFileByLocation(logical),
-		ParentId:     parentID,
-		ParentPath:   types.NormalizeLocationPath(parentPath),
+		ServiceID:    pendingFileByLocation(wire),
+		ParentId:     parentStored,
+		ParentPath:   types.LogicalParentFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath)),
 		DisplayName:  name,
-		LocationPath: logical,
+		LocationPath: types.ChildLocationFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath), name),
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,
 		Type:         types.NodeTypeFile,
@@ -512,5 +485,6 @@ var (
 // handing off session_id (explicitly out of contract), so ME does a full overwrite restart.
 func (d *DropboxFS) SupportsResumableTransfer() bool { return false }
 
-// RequiresDeleteBeforeRestart: finish/overwrite clobbers a partial destination path safely.
-func (d *DropboxFS) RequiresDeleteBeforeRestart() bool { return false }
+// RequiresDeleteBeforeRestart: unfinished sessions leave no durable DST object to delete;
+// when an attempt marker exists ME still deletes by path before full restart.
+func (d *DropboxFS) RequiresDeleteBeforeRestart() bool { return true }

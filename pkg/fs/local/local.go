@@ -40,6 +40,12 @@ type LocalFS struct {
 	injectBeforeOp func(operation string, attempt int) error // tests only
 }
 
+// SetInjectBeforeOp installs a test-only hook invoked before each classified retry attempt.
+// Pass nil to clear. Not used in production paths.
+func (l *LocalFS) SetInjectBeforeOp(fn func(operation string, attempt int) error) {
+	l.injectBeforeOp = fn
+}
+
 // NewLocalFS constructs a new LocalFS adapter rooted at the given path.
 func NewLocalFS(rootPath string) (*LocalFS, error) {
 	abs, err := filepath.Abs(rootPath)
@@ -132,6 +138,9 @@ func (l *LocalFS) listChildrenOnce(ctx context.Context, identifier string) (type
 				return result, err
 			}
 			name := entry.Name()
+			if isSilentJunkBasename(name) {
+				continue
+			}
 			fullPath := filepath.Join(identifier, name)
 			fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 

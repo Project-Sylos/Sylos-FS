@@ -9,6 +9,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/optimeout"
 )
 
 const (
@@ -122,6 +125,8 @@ type uploadPart struct {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, rawURL string, reqBody any, respBody any) error {
+	ctx, cancel := optimeout.Bound(ctx, optimeout.RPC)
+	defer cancel()
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -245,6 +250,22 @@ func (c *Client) DeleteFile(ctx context.Context, fileID string) error {
 func (c *Client) DeleteFolder(ctx context.Context, folderID string) error {
 	rawURL := apiHost + "/folders/" + url.PathEscape(folderID) + "?recursive=true"
 	return c.doJSON(ctx, http.MethodDelete, rawURL, nil, nil)
+}
+
+func (c *Client) UpdateFileName(ctx context.Context, fileID, name string) (Item, error) {
+	var out Item
+	err := c.doJSON(ctx, http.MethodPut, apiHost+"/files/"+url.PathEscape(fileID)+"?fields="+url.QueryEscape(itemFields), map[string]any{
+		"name": name,
+	}, &out)
+	return out, err
+}
+
+func (c *Client) UpdateFolderName(ctx context.Context, folderID, name string) (Item, error) {
+	var out Item
+	err := c.doJSON(ctx, http.MethodPut, apiHost+"/folders/"+url.PathEscape(folderID)+"?fields="+url.QueryEscape(itemFields), map[string]any{
+		"name": name,
+	}, &out)
+	return out, err
 }
 
 func (c *Client) DownloadFile(ctx context.Context, fileID string) (io.ReadCloser, error) {
@@ -374,6 +395,27 @@ func (c *Client) UploadSessionPart(ctx context.Context, uploadPartURL string, pa
 	return resp.Part, nil
 }
 
+func isTransientUploadErr(parent context.Context, err error) bool {
+	if optimeout.IsTransient(parent, err) {
+		return true
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return optimeout.SoftHTTP(apiErr.Status)
+	}
+	return false
+}
+
+func (c *Client) uploadSessionPartWithRetry(ctx context.Context, uploadPartURL string, chunk []byte, offset, totalSize int64) (uploadPart, error) {
+	part, err := optimeout.DoChunkIf(ctx, int64(len(chunk)), isTransientUploadErr, func(cctx context.Context) (uploadPart, error) {
+		return c.UploadSessionPart(cctx, uploadPartURL, chunk, offset, totalSize)
+	})
+	if err != nil {
+		return uploadPart{}, fmt.Errorf("box: part upload at offset %d: %w", offset, err)
+	}
+	return part, nil
+}
+
 func (c *Client) CommitUploadSession(ctx context.Context, commitURL string, parts []uploadPart, contentSHA1 string) (Item, error) {
 	digest := "sha=" + contentSHA1
 	body := map[string]any{
@@ -415,6 +457,29 @@ func (c *Client) CommitUploadSession(ctx context.Context, commitURL string, part
 	return Item{}, fmt.Errorf("box: commit returned no file entries")
 }
 
+func (c *Client) commitUploadSessionWithRetry(ctx context.Context, commitURL string, parts []uploadPart, contentSHA1 string) (Item, error) {
+	item, err := optimeout.DoCommitIf(ctx, isTransientUploadErr, func(cctx context.Context) (Item, error) {
+		return c.CommitUploadSession(cctx, commitURL, parts, contentSHA1)
+	})
+	if err != nil {
+		return Item{}, fmt.Errorf("box: commit: %w", err)
+	}
+	return item, nil
+}
+
+func (c *Client) AbortUploadSession(ctx context.Context, abortURL string) error {
+	if abortURL == "" {
+		return nil
+	}
+	actx, cancel := optimeout.Bound(ctx, optimeout.Abort)
+	defer cancel()
+	req, err := http.NewRequestWithContext(actx, http.MethodDelete, abortURL, nil)
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
+
 func (c *Client) UploadChunked(ctx context.Context, folderID, fileName, existingFileID string, reader io.ReaderAt, size int64) (Item, error) {
 	var sess uploadSession
 	var err error
@@ -438,6 +503,7 @@ func (c *Client) UploadChunked(ctx context.Context, folderID, fileName, existing
 	if commitURL == "" {
 		commitURL = uploadHost + "/files/upload_sessions/" + url.PathEscape(sess.ID) + "/commit"
 	}
+	abortURL := sess.SessionEndpoints.Abort
 
 	h := sha1.New()
 	var parts []uploadPart
@@ -449,20 +515,32 @@ func (c *Client) UploadChunked(ctx context.Context, folderID, fileName, existing
 		}
 		section := make([]byte, n)
 		if _, err := reader.ReadAt(section, offset); err != nil && err != io.EOF {
+			_ = c.AbortUploadSession(ctx, abortURL)
 			return Item{}, err
 		}
 		if _, err := h.Write(section); err != nil {
+			_ = c.AbortUploadSession(ctx, abortURL)
 			return Item{}, err
 		}
-		part, err := c.UploadSessionPart(ctx, uploadURL, section, offset, size)
+		part, err := c.uploadSessionPartWithRetry(ctx, uploadURL, section, offset, size)
 		if err != nil {
+			_ = c.AbortUploadSession(ctx, abortURL)
 			return Item{}, err
 		}
 		parts = append(parts, part)
 		offset += int64(n)
 	}
+	if offset != size {
+		_ = c.AbortUploadSession(ctx, abortURL)
+		return Item{}, fmt.Errorf("box: uploaded %d bytes but declared size %d", offset, size)
+	}
 	contentSHA1 := base64.StdEncoding.EncodeToString(h.Sum(nil))
-	return c.CommitUploadSession(ctx, commitURL, parts, contentSHA1)
+	item, err := c.commitUploadSessionWithRetry(ctx, commitURL, parts, contentSHA1)
+	if err != nil {
+		_ = c.AbortUploadSession(ctx, abortURL)
+		return Item{}, err
+	}
+	return item, nil
 }
 
 func parentIDOf(item Item) string {

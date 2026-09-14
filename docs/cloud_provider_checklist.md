@@ -19,7 +19,7 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
    - `FSDegradationReporter` on shared session state
    - `FSListChildrenPagination` with provider page limits
    - Optional batch mutations: `FSCreateFolderBatch` / `FSDeleteBatch` / `FSUploadFilesBatch` (Dropbox implements all three; ME uses `LeaseGroupBudget` when present). Graph `$batch` (max 20) is not used for these interfaces in v1.
-   - Optional rename: `FSRename` / `RenameNode` for Accept-on-already-existed destination remaps (local, SFTP, Dropbox implement; others may return unsupported).
+   - Required rename: `FSRename` / `RenameNode` for Accept remaps on source and destination (local, SFTP, Dropbox, Google Drive, OneDrive, SharePoint, Box, Spectra).
    - Optional `FSTransferRestartPolicy` (+ `FSResumableWrite` when byte-resume in a fresh session is supported). Dropbox declares non-resumable overwrite-safe (upload sessions are not handed off); LocalFS seeks.
   - Optional **`FSOpenWriteWithSize`** when the provider needs declared content length for chunked upload sessions (Box). ME prefers this over bare `OpenWrite` when present.
   - **Upload streaming** — `OpenWrite` must stream fragments/parts on `Write` (or pipe-concurrent upload). No full-file temp spill / close-only bulk upload. See Sylos-FS README “Upload streaming contract”.
@@ -30,11 +30,11 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
 ### Dropbox (implemented)
 
 - Package: `pkg/fs/dropbox/` — `session.go`, `client.go`, `adapter.go`, `classify.go`, `transfer.go`, `batch.go`
-- Roots: `user_root`, `team_space`, `team_folder`, `shared_folder` (see `pkg/cloud/roots.go`)
+- Roots: browse exposes `user_root` only (My Dropbox). Team/shared mounts still appear under that home listing; `team_space` / `team_folder` / `shared_folder` remain valid adapter contexts when entered as folders (see `pkg/cloud/roots.go`)
 - Browse: `cloud.BrowseRoot(root)` passes namespace metadata via `driveId`
 - Batch: `files/create_folder_batch` + `files/delete_batch` + `upload_session/start_batch` + `upload_session/finish_batch` (max 1000); ME pulls ~20k and leases ~1000 when these capabilities are present. File batch reduces commit RPCs (not bytes); appends stay per-chunk; finish_batch is serialized per adapter.
 - OAuth token URI: `https://api.dropboxapi.com/oauth2/token`
-- Scopes: `files.metadata.read`, `files.content.read`, `files.content.write`, `account_info.read`, `sharing.read`, `team_data.team_space`
+- Scopes: `files.metadata.read`, `files.content.read`, `files.content.write`, `account_info.read`, `sharing.read`
 
 ### OneDrive / SharePoint (implemented)
 

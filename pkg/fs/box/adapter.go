@@ -155,6 +155,44 @@ func (d *BoxFS) DeleteNode(ctx context.Context, nodeID, nodeType string) error {
 	})
 }
 
+// RenameNode renames a Box file or folder in place.
+func (d *BoxFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = parentServiceID
+	serviceID = strings.TrimSpace(serviceID)
+	newName = strings.TrimSpace(newName)
+	if serviceID == "" || newName == "" {
+		return types.RenameResult{}, fmt.Errorf("box: rename requires service id and new name")
+	}
+	var out types.RenameResult
+	err := d.withClassifiedRetry(ctx, "RenameNode", func() error {
+		client, err := d.session.apiClient(ctx)
+		if err != nil {
+			return err
+		}
+		var item Item
+		if nodeType == types.NodeTypeFolder || nodeType == "folder" {
+			item, err = client.UpdateFolderName(ctx, serviceID, newName)
+		} else {
+			item, err = client.UpdateFileName(ctx, serviceID, newName)
+		}
+		if err != nil {
+			return err
+		}
+		out = types.RenameResult{ServiceID: item.ID, DisplayName: item.Name}
+		if out.DisplayName == "" {
+			out.DisplayName = newName
+		}
+		if out.ServiceID == "" {
+			out.ServiceID = serviceID
+		}
+		return nil
+	})
+	return out, err
+}
+
 func (d *BoxFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	_ = ctx
 	if parentID == "" {

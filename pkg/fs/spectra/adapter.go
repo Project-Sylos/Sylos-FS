@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"codeberg.org/Sylos/Spectra/sdk"
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/ctxstream"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
@@ -207,7 +208,7 @@ func (s *SpectraFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser,
 	if err != nil {
 		return nil, err
 	}
-	return io.NopCloser(strings.NewReader(string(fileData))), nil
+	return ctxstream.NewReadCloser(ctx, io.NopCloser(strings.NewReader(string(fileData)))), nil
 }
 
 // CreateFolder creates a new folder under the specified parent node.
@@ -259,6 +260,38 @@ func (s *SpectraFS) DeleteNode(ctx context.Context, nodeID string, nodeType stri
 			TableName: s.world,
 		})
 	})
+}
+
+// RenameNode renames a Spectra file or folder in place (rewrites path-hashed IDs).
+func (s *SpectraFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = parentServiceID
+	_ = nodeType
+	serviceID = strings.TrimSpace(serviceID)
+	newName = strings.TrimSpace(newName)
+	if serviceID == "" || newName == "" {
+		return types.RenameResult{}, fmt.Errorf("spectra: rename requires service id and new name")
+	}
+	var out types.RenameResult
+	err := s.withClassifiedRetry(ctx, "RenameNode", func() error {
+		node, callErr := s.fs.RenameNode(&sdk.RenameNodeRequest{
+			ID:        serviceID,
+			TableName: s.world,
+			NewName:   newName,
+		})
+		if callErr != nil {
+			return callErr
+		}
+		out = types.RenameResult{
+			ServiceID:    node.ID,
+			DisplayName:  node.Name,
+			LocationPath: types.NormalizeLocationPath(node.Path),
+		}
+		return nil
+	})
+	return out, err
 }
 
 // CreateFile creates a file entry in Spectra with metadata only.

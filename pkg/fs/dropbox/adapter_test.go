@@ -40,19 +40,6 @@ func TestListPathSharedFolderRootUsesPath(t *testing.T) {
 	}
 }
 
-func TestSharedRootPathPrefersRootPathOverFolderRef(t *testing.T) {
-	d := &DropboxFS{
-		ctx: dropboxContext{
-			RootType:  cloud.RootTypeUserRoot,
-			RootPath:  "/extra/folder",
-			FolderRef: "id:should-not-win",
-		},
-	}
-	if got := d.sharedRootPath(); got != "/extra/folder" {
-		t.Fatalf("sharedRootPath=%q", got)
-	}
-}
-
 func TestDropboxPathRef(t *testing.T) {
 	if got := dropboxPathRef("abc"); got != "id:abc" {
 		t.Fatalf("got %q", got)
@@ -65,28 +52,73 @@ func TestDropboxPathRef(t *testing.T) {
 	}
 }
 
-func TestParentPathForCreateRoot(t *testing.T) {
-	if got := parentPathForCreate("root", "Interview Prep"); got != "/Interview Prep" {
+func TestCreateAPIPathUsesParentID(t *testing.T) {
+	d := &DropboxFS{
+		ctx:  dropboxContext{RootType: cloud.RootTypeUserRoot},
+		root: types.Folder{ServiceID: "root", Type: cloud.RootTypeUserRoot, LocationPath: "/"},
+	}
+	got, err := d.createAPIPath("root", "Interview Prep", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/Interview Prep" {
 		t.Fatalf("got %q want /Interview Prep", got)
 	}
-	if got := parentPathForCreate("", "foo"); got != "/foo" {
+	got, err = d.createAPIPath("", "foo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/foo" {
 		t.Fatalf("got %q want /foo", got)
+	}
+	got, err = d.createAPIPath("id:abc", "child", map[string]string{
+		"location_path": "/minted-uuid/child",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "id:abc/child" {
+		t.Fatalf("got %q want id:abc/child (metadata ignored)", got)
 	}
 }
 
-func TestNormalizeParentForCreate(t *testing.T) {
+func TestCreateAPIPathNestedMigrationRoot(t *testing.T) {
+	d := &DropboxFS{
+		ctx: dropboxContext{
+			RootType: cloud.RootTypeUserRoot,
+			RootPath: "/extra/folder",
+		},
+		root: types.Folder{ServiceID: "id:rootfolder", Type: types.NodeTypeFolder, LocationPath: "/"},
+	}
+	got, err := d.createAPIPath("id:rootfolder", "top", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "id:rootfolder/top" {
+		t.Fatalf("got %q want id:rootfolder/top", got)
+	}
+	got, err = d.createAPIPath("id:parent", "child", map[string]string{"location_path": "/2/child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "id:parent/child" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCreateUnderNamespaceRoot(t *testing.T) {
 	d := &DropboxFS{
 		ctx:  dropboxContext{RootType: cloud.RootTypeUserRoot, NamespaceID: "ns-home"},
-		root: types.Folder{ServiceID: "root", LocationPath: "/"},
+		root: types.Folder{ServiceID: "root", Type: cloud.RootTypeUserRoot, LocationPath: "/"},
 	}
-	if got := d.normalizeParentForCreate("root"); got != "" {
-		t.Fatalf("normalize(root)=%q want empty", got)
+	if !d.createUnderNamespaceRoot("root") {
+		t.Fatal("expected root")
 	}
-	if got := d.normalizeParentForCreate("ns-home"); got != "" {
-		t.Fatalf("normalize(ns-home)=%q want empty", got)
+	if !d.createUnderNamespaceRoot("ns-home") {
+		t.Fatal("expected ns-home")
 	}
-	if got := d.normalizeParentForCreate("id:abc"); got != "id:abc" {
-		t.Fatalf("normalize(id:abc)=%q", got)
+	if d.createUnderNamespaceRoot("id:abc") {
+		t.Fatal("id:abc is not namespace root")
 	}
 }
 

@@ -203,6 +203,40 @@ func (a *AdapterOps) DeleteNode(ctx context.Context, nodeID, nodeType string) er
 	})
 }
 
+// RenameNode renames a Graph drive item in place.
+func (a *AdapterOps) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = parentServiceID
+	_ = nodeType
+	serviceID = strings.TrimSpace(serviceID)
+	newName = strings.TrimSpace(newName)
+	if serviceID == "" || newName == "" {
+		return types.RenameResult{}, fmt.Errorf("msgraph: rename requires service id and new name")
+	}
+	var out types.RenameResult
+	err := a.WithClassifiedRetry(ctx, "RenameNode", func() error {
+		client, err := a.Client(ctx)
+		if err != nil {
+			return err
+		}
+		item, err := client.UpdateItemName(ctx, ItemPath(a.EffectiveDriveID(), serviceID), newName)
+		if err != nil {
+			return err
+		}
+		out = types.RenameResult{ServiceID: item.ID, DisplayName: item.Name}
+		if out.DisplayName == "" {
+			out.DisplayName = newName
+		}
+		if out.ServiceID == "" {
+			out.ServiceID = serviceID
+		}
+		return nil
+	})
+	return out, err
+}
+
 func (a *AdapterOps) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	if parentID == "" {
 		parentID = a.EffectiveFolderID("")
@@ -237,6 +271,36 @@ func (a *AdapterOps) OpenWriteWithSize(ctx context.Context, fileID string, size 
 		}
 	}
 	return w, nil
+}
+
+// SupportsResumableTransfer: Graph upload sessions are addressable via uploadUrl.
+func (a *AdapterOps) SupportsResumableTransfer() bool { return true }
+
+// RequiresDeleteBeforeRestart: incomplete/simple-path leftovers need delete before restart.
+func (a *AdapterOps) RequiresDeleteBeforeRestart() bool { return true }
+
+// OpenWriteFromResumeToken continues a Graph upload session; returns authoritative offset.
+// size must be the known total byte length so Content-Range includes a total (Graph rejects /*).
+func (a *AdapterOps) OpenWriteFromResumeToken(ctx context.Context, token string, hintOffset, size int64) (io.WriteCloser, int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, err := a.Client(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	offset, err := client.GetUploadSessionNextOffset(ctx, token, hintOffset)
+	if err != nil {
+		return nil, 0, err
+	}
+	if size < 0 {
+		return nil, 0, fmt.Errorf("msgraph: resume requires known content size for Content-Range total")
+	}
+	w, err := NewWriterFromResumeToken(a, ctx, token, offset, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	return w, offset, nil
 }
 
 func (a *AdapterOps) NormalizePath(p string) string {

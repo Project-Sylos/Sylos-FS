@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/cloud"
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/optimeout"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -172,6 +173,20 @@ func (s *Session) refreshToken(ctx context.Context) (string, time.Time, error) {
 }
 
 func (s *Session) httpClient(ctx context.Context) (*http.Client, error) {
+	return s.oauthHTTPClient(ctx)
+}
+
+func (s *Session) uploadHTTPClient(ctx context.Context) (*http.Client, error) {
+	client, err := s.oauthHTTPClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	const driveUploadChunk = 16 << 20
+	client.Transport = optimeout.PerRequest(client.Transport, optimeout.Chunk(driveUploadChunk))
+	return client, nil
+}
+
+func (s *Session) oauthHTTPClient(ctx context.Context) (*http.Client, error) {
 	if token, ok := s.tokens.GetAccessToken(s.connectionID); ok {
 		src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})
 		return oauth2.NewClient(ctx, src), nil
@@ -189,6 +204,14 @@ func (s *Session) httpClient(ctx context.Context) (*http.Client, error) {
 
 func (s *Session) driveService(ctx context.Context) (*drive.Service, error) {
 	client, err := s.httpClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return drive.NewService(ctx, option.WithHTTPClient(client))
+}
+
+func (s *Session) uploadDriveService(ctx context.Context) (*drive.Service, error) {
+	client, err := s.uploadHTTPClient(ctx)
 	if err != nil {
 		return nil, err
 	}

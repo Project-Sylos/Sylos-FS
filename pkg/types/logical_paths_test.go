@@ -23,6 +23,13 @@ func TestListChildrenBasePathFallsBackToRoot(t *testing.T) {
 	}
 }
 
+func TestNormalizeLocationPathPreservesTrailingSpace(t *testing.T) {
+	got := types.NormalizeLocationPath("/Testing-GPL/Extra Space ")
+	if got != "/Testing-GPL/Extra Space " {
+		t.Fatalf("got %q want trailing space preserved", got)
+	}
+}
+
 func TestLogicalParentFromCreateMetadataLocationPath(t *testing.T) {
 	meta := map[string]string{"location_path": "/Interview Prep/Beyond Feeback"}
 	got := types.LogicalParentFromCreateMetadata(meta, "/")

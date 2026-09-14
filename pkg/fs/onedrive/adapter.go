@@ -66,6 +66,10 @@ func (d *OneDriveFS) DeleteNode(ctx context.Context, nodeID, nodeType string) er
 	return d.ops.DeleteNode(ctx, nodeID, nodeType)
 }
 
+func (d *OneDriveFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	return d.ops.RenameNode(ctx, parentServiceID, serviceID, newName, nodeType)
+}
+
 func (d *OneDriveFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	return d.ops.CreateFile(ctx, parentID, name, size, metadata)
 }
@@ -76,6 +80,13 @@ func (d *OneDriveFS) OpenWrite(ctx context.Context, fileID string) (io.WriteClos
 
 func (d *OneDriveFS) OpenWriteWithSize(ctx context.Context, fileID string, size int64) (io.WriteCloser, error) {
 	return d.ops.OpenWriteWithSize(ctx, fileID, size)
+}
+
+func (d *OneDriveFS) SupportsResumableTransfer() bool  { return d.ops.SupportsResumableTransfer() }
+func (d *OneDriveFS) RequiresDeleteBeforeRestart() bool { return d.ops.RequiresDeleteBeforeRestart() }
+
+func (d *OneDriveFS) OpenWriteFromResumeToken(ctx context.Context, token string, hintOffset, size int64) (io.WriteCloser, int64, error) {
+	return d.ops.OpenWriteFromResumeToken(ctx, token, hintOffset, size)
 }
 
 func (d *OneDriveFS) NormalizePath(p string) string { return d.ops.NormalizePath(p) }
@@ -132,6 +143,8 @@ var (
 	_ types.FSDegradationReporter    = (*OneDriveFS)(nil)
 	_ types.FSListChildrenPagination = (*OneDriveFS)(nil)
 	_ types.FSStorageInfo            = (*OneDriveFS)(nil)
+	_ types.FSTransferRestartPolicy  = (*OneDriveFS)(nil)
+	_ types.FSResumeTokenWrite       = (*OneDriveFS)(nil)
 )
 
 // RegisterCredentialsPayload builds stored credentials JSON from UI token POST.

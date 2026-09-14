@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"codeberg.org/Sylos/Sylos-FS/pkg/fs/optimeout"
 )
 
 const (
@@ -84,6 +87,9 @@ func (c *Client) withSelectAdmin(adminMemberID string) *Client {
 }
 
 func (c *Client) rpc(ctx context.Context, endpoint string, reqBody any, respBody any) error {
+	// No overall Bound here: finish_batch / delete_batch polls can exceed RPC.
+	// List/Delete/Create rely on ME ProgressWatchdog cancel via ctx; append/finish
+	// upload paths use optimeout.DoChunkIf / DoCommitIf.
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -320,12 +326,14 @@ func (c *Client) listFolderPage(ctx context.Context, path string, cursor string)
 	if cursor != "" {
 		return c.listFolderContinue(ctx, cursor)
 	}
+	ctx, cancel := optimeout.Bound(ctx, optimeout.RPC)
+	defer cancel()
 	var resp listFolderResult
 	err := c.rpc(ctx, "files/list_folder", listFolderArg{
-		Path:                path,
-		Recursive:           false,
+		Path:                  path,
+		Recursive:             false,
 		IncludeMountedFolders: true,
-		Limit:               1000,
+		Limit:                 1000,
 	}, &resp)
 	if err != nil {
 		return nil, "", false, err
@@ -334,6 +342,8 @@ func (c *Client) listFolderPage(ctx context.Context, path string, cursor string)
 }
 
 func (c *Client) listFolderContinue(ctx context.Context, cursor string) ([]fileMetadata, string, bool, error) {
+	ctx, cancel := optimeout.Bound(ctx, optimeout.RPC)
+	defer cancel()
 	var resp listFolderResult
 	err := c.rpc(ctx, "files/list_folder/continue", map[string]string{"cursor": cursor}, &resp)
 	if err != nil {
@@ -465,10 +475,25 @@ func (c *Client) uploadSession(ctx context.Context, path string, body io.Reader)
 			Mute:       false,
 		},
 	}
-	if _, err := c.content(ctx, "files/upload_session/finish", finishArg, nil, &finishResp); err != nil {
+	_, err = optimeout.DoCommitIf(ctx, isTransientUploadErr, func(cctx context.Context) (struct{}, error) {
+		_, e := c.content(cctx, "files/upload_session/finish", finishArg, nil, &finishResp)
+		return struct{}{}, e
+	})
+	if err != nil {
 		return fileMetadata{}, err
 	}
 	return finishResp.Metadata, nil
+}
+
+func isTransientUploadErr(parent context.Context, err error) bool {
+	if optimeout.IsTransient(parent, err) {
+		return true
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return optimeout.SoftHTTP(apiErr.Status)
+	}
+	return false
 }
 
 // appendUploadSession streams body into an open upload session and closes it on the last chunk.
@@ -492,7 +517,11 @@ func (c *Client) appendUploadSession(ctx context.Context, sessionID string, body
 				},
 				"close": atEOF,
 			}
-			if _, err := c.content(ctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(chunk), nil); err != nil {
+			_, err := optimeout.DoChunkIf(ctx, int64(n), isTransientUploadErr, func(cctx context.Context) (struct{}, error) {
+				_, e := c.content(cctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(chunk), nil)
+				return struct{}{}, e
+			})
+			if err != nil {
 				return 0, err
 			}
 			offset += uint64(n)
@@ -515,7 +544,11 @@ func (c *Client) appendUploadSession(ctx context.Context, sessionID string, body
 			},
 			"close": true,
 		}
-		if _, err := c.content(ctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(nil), nil); err != nil {
+		_, err := optimeout.DoChunkIf(ctx, 0, isTransientUploadErr, func(cctx context.Context) (struct{}, error) {
+			_, e := c.content(cctx, "files/upload_session/append_v2", appendArg, bytes.NewReader(nil), nil)
+			return struct{}{}, e
+		})
+		if err != nil {
 			return 0, err
 		}
 	}
@@ -597,7 +630,6 @@ func (c *Client) listSharedFolders(ctx context.Context) ([]sharedFolderMetadata,
 	return all, nil
 }
 
-
 // teamFolderNamespace returns the namespace id for Path-Root. For Dropbox team folders,
 // team_folder_id is the shared-folder / namespace id.
 func (c *Client) teamFolderNamespace(_ context.Context, teamFolderID string) (string, error) {
@@ -637,18 +669,4 @@ func (c *Client) getMetadata(ctx context.Context, pathRef string) (fileMetadata,
 		"include_has_explicit_shared_members": false,
 	}, &meta)
 	return meta, err
-}
-
-func parentPathForCreate(parentID, name string) string {
-	if isDropboxRootRef(parentID) {
-		return "/" + name
-	}
-	ref := dropboxPathRef(parentID)
-	if strings.HasPrefix(ref, "/") {
-		if ref == "/" {
-			return "/" + name
-		}
-		return ref + "/" + name
-	}
-	return ref + "/" + name
 }

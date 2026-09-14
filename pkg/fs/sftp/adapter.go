@@ -225,11 +225,33 @@ func (f *SftpFS) DeleteNode(ctx context.Context, nodeID string, nodeType string)
 		case types.NodeTypeFile:
 			return f.sftpClient().Remove(path)
 		case types.NodeTypeFolder:
-			return f.sftpClient().RemoveDirectory(path)
+			return f.removeAll(path)
 		default:
 			return fmt.Errorf("sftp: unsupported node type %q", nodeType)
 		}
 	})
+}
+
+// removeAll recursively deletes a remote directory tree (children first, then the directory).
+func (f *SftpFS) removeAll(dirPath string) error {
+	client := f.sftpClient()
+	entries, err := client.ReadDir(dirPath)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		child := path.Join(dirPath, ent.Name())
+		if ent.IsDir() {
+			if err := f.removeAll(child); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := client.Remove(child); err != nil {
+			return err
+		}
+	}
+	return client.RemoveDirectory(dirPath)
 }
 
 // RenameNode renames a remote SFTP path via Rename.

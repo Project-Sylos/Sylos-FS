@@ -15,18 +15,6 @@ import (
 
 const pendingFilePrefix = "pending:"
 const pendingLocPrefix = "pending-loc:"
-const pendingRootParent = "root"
-
-func pendingParentRef(parentID string) string {
-	if isDropboxRootRef(parentID) {
-		return pendingRootParent
-	}
-	return parentID
-}
-
-func pendingFileID(parentID, name string) string {
-	return fmt.Sprintf("%s%s:%s", pendingFilePrefix, pendingParentRef(parentID), name)
-}
 
 func pendingFileByLocation(locationPath string) string {
 	return pendingLocPrefix + locationPath
@@ -100,15 +88,16 @@ func (w *dropboxWriter) resolveUploadPath(client *Client) (string, error) {
 	if !w.create {
 		return dropboxPathRef(w.fileID), nil
 	}
+	// pending-loc stores the Dropbox wire path from CreateFile (id:parent/name or /name).
 	if w.locationPath != "" {
-		return w.dfs.resolveLocationPath(w.locationPath), nil
+		return w.locationPath, nil
 	}
 	if err := w.dfs.errTeamSpaceRootWrite(); err != nil && isDropboxRootRef(w.parentID) {
 		return "", err
 	}
 	apiPath, err := w.dfs.createAPIPath(w.parentID, w.fileName, nil)
 	if err != nil {
-		return "", fmt.Errorf("dropbox: upload create requires location_path (or root parent): %w", err)
+		return "", fmt.Errorf("dropbox: upload create path: %w", err)
 	}
 	return apiPath, nil
 }

@@ -7,12 +7,12 @@ import (
 	"context"
 	"io"
 )
+
 // FSTransferRestartPolicy declares how an adapter recovers mid-transfer after abandon.
 // ME reads this the same way it reads CreateFolderBatchMax — no provider name switches.
 type FSTransferRestartPolicy interface {
 	// SupportsResumableTransfer reports whether the adapter can continue bytes from an
-	// offset in a *new* provider session (SRC seek + continue write). Sessions are never
-	// handed off between workers; resume always opens a fresh session then seeks.
+	// offset using a persisted resume token (fresh local handle; no live session handoff).
 	SupportsResumableTransfer() bool
 	// RequiresDeleteBeforeRestart reports whether ME must DeleteNode(dst) before a full
 	// restart. False means overwrite/clobber of a partial destination is safe.
@@ -56,6 +56,55 @@ func OpenWriteFromOffsetFrom(adapter any) (FSResumableWrite, bool) {
 	}
 	w, ok := adapter.(FSResumableWrite)
 	return w, ok
+}
+
+// FSResumeTokenWrite continues an upload using a persisted provider resume token.
+// size is the declared content length when known (required by Graph Content-Range totals);
+// pass -1 only when the provider allows unknown-length sessions.
+// Returns the writer and the authoritative byte offset (server next-expected).
+type FSResumeTokenWrite interface {
+	OpenWriteFromResumeToken(ctx context.Context, token string, hintOffset, size int64) (io.WriteCloser, int64, error)
+}
+
+// OpenWriteFromResumeTokenFrom returns FSResumeTokenWrite if implemented.
+func OpenWriteFromResumeTokenFrom(adapter any) (FSResumeTokenWrite, bool) {
+	if adapter == nil {
+		return nil, false
+	}
+	w, ok := adapter.(FSResumeTokenWrite)
+	return w, ok
+}
+
+// FSSuspendableWrite can stop without committing a partial object (scale-down abandon).
+type FSSuspendableWrite interface {
+	Suspend() error
+}
+
+// ResumeTokenProvider exposes the opaque provider resume token from an open writer.
+type ResumeTokenProvider interface {
+	ResumeToken() string
+}
+
+// SuspendWrite calls Suspend when available; otherwise Close (best-effort).
+func SuspendWrite(w io.WriteCloser) error {
+	if w == nil {
+		return nil
+	}
+	if s, ok := w.(FSSuspendableWrite); ok {
+		return s.Suspend()
+	}
+	return w.Close()
+}
+
+// WriterResumeToken returns ResumeToken when the writer exposes one.
+func WriterResumeToken(w io.WriteCloser) string {
+	if w == nil {
+		return ""
+	}
+	if p, ok := w.(ResumeTokenProvider); ok {
+		return p.ResumeToken()
+	}
+	return ""
 }
 
 // FSOpenWriteWithSize opens a destination write stream with a declared content size.

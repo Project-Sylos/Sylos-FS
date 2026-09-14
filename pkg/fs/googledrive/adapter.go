@@ -199,6 +199,44 @@ func (d *DriveFS) DeleteNode(ctx context.Context, nodeID string, nodeType string
 	})
 }
 
+// RenameNode renames a Google Drive file or folder in place (metadata name update).
+func (d *DriveFS) RenameNode(ctx context.Context, parentServiceID, serviceID, newName, nodeType string) (types.RenameResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = parentServiceID
+	_ = nodeType
+	serviceID = strings.TrimSpace(serviceID)
+	newName = strings.TrimSpace(newName)
+	if serviceID == "" || newName == "" {
+		return types.RenameResult{}, fmt.Errorf("google drive: rename requires service id and new name")
+	}
+	var out types.RenameResult
+	err := d.withClassifiedRetry(ctx, "RenameNode", func() error {
+		srv, err := d.session.driveService(ctx)
+		if err != nil {
+			return err
+		}
+		updated, err := srv.Files.Update(serviceID, &drive.File{Name: newName}).
+			SupportsAllDrives(true).
+			Fields("id,name").
+			Context(ctx).
+			Do()
+		if err != nil {
+			return err
+		}
+		out = types.RenameResult{ServiceID: updated.Id, DisplayName: updated.Name}
+		if out.DisplayName == "" {
+			out.DisplayName = newName
+		}
+		if out.ServiceID == "" {
+			out.ServiceID = serviceID
+		}
+		return nil
+	})
+	return out, err
+}
+
 func (d *DriveFS) CreateFile(ctx context.Context, parentID, name string, size int64, metadata map[string]string) (types.File, error) {
 	if parentID == "" {
 		parentID = d.ctx.FolderID

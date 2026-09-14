@@ -116,20 +116,26 @@ func (m *ServiceManager) getCloudStorageInfo(ctx context.Context, req GetStorage
 	if req.ConnectionID == "" {
 		return types.UnavailableStorage(), fmt.Errorf("connectionID required for cloud storage info")
 	}
+	// Nested folder selections persist type=folder/file; those are not browse root
+	// types. Treat them as the account/primary drive for quota (same as empty rootType).
+	rootType := strings.TrimSpace(req.RootType)
+	if rootType == types.NodeTypeFolder || rootType == types.NodeTypeFile {
+		rootType = ""
+	}
 	// Shared-with-me and similar virtual spaces are not owned capacity; do not
 	// report the account quota as if it applied to that listing.
-	if !cloud.ReportsOwnedStorageQuota(req.RootType) {
+	if !cloud.ReportsOwnedStorageQuota(rootType) {
 		return types.UnavailableStorage(), nil
 	}
 	conn, exists := m.getConnection(req.ConnectionID)
 	if !exists || conn.typ != types.ServiceTypeCloud || conn.cloud == nil {
 		return types.UnavailableStorage(), fmt.Errorf("cloud connection %s not found", req.ConnectionID)
 	}
-	folder, err := cloud.BrowseFolder("root", req.RootType, req.DriveID)
+	folder, err := cloud.BrowseFolder("root", rootType, req.DriveID)
 	if err != nil {
 		folder = types.Folder{ServiceID: "root", Type: types.NodeTypeFolder, LocationPath: "/"}
-		if req.RootType != "" {
-			folder.Type = req.RootType
+		if rootType != "" {
+			folder.Type = rootType
 		}
 		if req.DriveID != "" {
 			folder.ParentId = req.DriveID
