@@ -6,6 +6,7 @@ package dropbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"codeberg.org/Sylos/Sylos-FS/pkg/credentials"
 	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
@@ -46,8 +48,11 @@ type batchJobStatus struct {
 
 type batchEntryTagged struct {
 	Tag      string          `json:".tag"`
-	Metadata json.RawMessage `json:"metadata"`
+	Metadata json.RawMessage `json:"metadata"` // create_folder_batch / delete_batch success wrapper
 	Failure  json.RawMessage `json:"failure"`
+	// raw is the full entry JSON. finish_batch success flattens FileMetadata onto the
+	// entry (no nested "metadata" key); create_folder_batch nests FolderMetadata under "metadata".
+	raw json.RawMessage
 }
 
 func (c *Client) createFolderBatch(ctx context.Context, paths []string) ([]batchEntryTagged, error) {
@@ -171,30 +176,100 @@ func decodeBatchEntries(raw json.RawMessage) ([]batchEntryTagged, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("dropbox: batch complete with empty entries")
 	}
-	var entries []batchEntryTagged
-	if err := json.Unmarshal(raw, &entries); err != nil {
+	var rawEntries []json.RawMessage
+	if err := json.Unmarshal(raw, &rawEntries); err != nil {
 		return nil, fmt.Errorf("dropbox: decode batch entries: %w", err)
+	}
+	entries := make([]batchEntryTagged, len(rawEntries))
+	for i, entryRaw := range rawEntries {
+		if err := json.Unmarshal(entryRaw, &entries[i]); err != nil {
+			return nil, fmt.Errorf("dropbox: decode batch entry %d: %w", i, err)
+		}
+		entries[i].raw = entryRaw
 	}
 	return entries, nil
 }
 
+// decodeBatchSuccessFolder reads create_folder_batch success: FolderMetadata under "metadata".
+func decodeBatchSuccessFolder(entry batchEntryTagged) (fileMetadata, error) {
+	if len(entry.Metadata) == 0 {
+		return fileMetadata{}, fmt.Errorf("dropbox: decode success metadata: empty metadata")
+	}
+	var meta fileMetadata
+	if err := json.Unmarshal(entry.Metadata, &meta); err != nil {
+		return fileMetadata{}, fmt.Errorf("dropbox: decode success metadata: %w", err)
+	}
+	return meta, nil
+}
+
+// decodeBatchSuccessFile reads finish_batch success: FileMetadata flattened onto the entry body.
+func decodeBatchSuccessFile(entry batchEntryTagged) (fileMetadata, error) {
+	raw := entry.raw
+	if len(raw) == 0 {
+		return fileMetadata{}, fmt.Errorf("dropbox: decode success file metadata: empty entry")
+	}
+	var meta fileMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return fileMetadata{}, fmt.Errorf("dropbox: decode success file metadata: %w", err)
+	}
+	if strings.TrimSpace(meta.ID) == "" && strings.TrimSpace(meta.Name) == "" {
+		return fileMetadata{}, fmt.Errorf("dropbox: decode success file metadata: missing id and name")
+	}
+	return meta, nil
+}
+
 func batchEntryFailureError(entry batchEntryTagged) error {
 	tag := strings.TrimSpace(entry.Tag)
+	if tag == "" {
+		tag = "failure"
+	}
 	summary := tag
+	errorTag := tag
 	if len(entry.Failure) > 0 {
-		var fail taggedError
-		if json.Unmarshal(entry.Failure, &fail) == nil && fail.Tag != "" {
-			summary = fail.Tag
+		if flattened := flattenDropboxErrorTag(entry.Failure); flattened != "" {
+			summary = flattened
+			errorTag = flattened
 		} else {
 			summary = string(entry.Failure)
+			errorTag = summary
 		}
 	}
+	// Batch RPCs return HTTP 200 with per-entry failures; do not label every entry as 409.
+	// Real path conflicts use WriteError tag path/conflict/... (Dropbox single-item path errors are HTTP 409).
+	status := 0
+	if strings.Contains(strings.ToLower(errorTag), "conflict") {
+		status = http.StatusConflict
+	}
 	return &APIError{
-		Status:       http.StatusConflict,
+		Status:       status,
 		ErrorSummary: summary,
-		ErrorTag:     summary,
+		ErrorTag:     errorTag,
 		Body:         entry.Failure,
 	}
+}
+
+// mapBatchEntryFailure turns a per-entry failure into an ME-visible error.
+// Write lock contention becomes credentials.RateLimitedError so reportTaskOutcome
+// yields rate_limited (and AIMD sees degradation) instead of burning copy retries.
+func (d *DropboxFS) mapBatchEntryFailure(entry batchEntryTagged, operation string) error {
+	err := batchEntryFailureError(entry)
+	if !isDropboxWriteContentionError(err) {
+		return err
+	}
+	backoff := d.throttleBackoff(nil)
+	d.recordDegradation(types.FSDegradationRateLimit, operation, backoff)
+	return &credentials.RateLimitedError{RetryAfter: backoff, Err: err}
+}
+
+func isDropboxWriteContentionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && isDropboxWriteContentionTag(apiErr.ErrorTag) {
+		return true
+	}
+	return isDropboxWriteContentionTag(err.Error())
 }
 
 // CreateFolderBatchMax implements types.FSCreateFolderBatch.
@@ -230,6 +305,8 @@ func (d *DropboxFS) CreateFolderBatch(ctx context.Context, items []types.CreateF
 
 	var entries []batchEntryTagged
 	err := d.withClassifiedRetry(ctx, "CreateFolderBatch", func() error {
+		d.writeBatchMu.Lock()
+		defer d.writeBatchMu.Unlock()
 		client, err := d.client(ctx)
 		if err != nil {
 			return err
@@ -248,14 +325,14 @@ func (d *DropboxFS) CreateFolderBatch(ctx context.Context, items []types.CreateF
 	for i, entry := range entries {
 		switch strings.TrimSpace(entry.Tag) {
 		case "success":
-			var meta fileMetadata
-			if err := json.Unmarshal(entry.Metadata, &meta); err != nil {
-				out[i].Err = fmt.Errorf("dropbox: decode success metadata: %w", err)
+			meta, err := decodeBatchSuccessFolder(entry)
+			if err != nil {
+				out[i].Err = err
 				continue
 			}
 			out[i].Folder = d.metaToFolder(meta, folderBasePath(meta, basePaths[i]))
 		default:
-			out[i].Err = batchEntryFailureError(entry)
+			out[i].Err = d.mapBatchEntryFailure(entry, "CreateFolderBatch")
 		}
 	}
 	return out, nil
@@ -289,6 +366,8 @@ func (d *DropboxFS) DeleteBatch(ctx context.Context, items []types.DeleteBatchIt
 
 	var entries []batchEntryTagged
 	err := d.withClassifiedRetry(ctx, "DeleteBatch", func() error {
+		d.writeBatchMu.Lock()
+		defer d.writeBatchMu.Unlock()
 		client, err := d.client(ctx)
 		if err != nil {
 			return err
@@ -309,7 +388,7 @@ func (d *DropboxFS) DeleteBatch(ctx context.Context, items []types.DeleteBatchIt
 		case "success":
 			// ok
 		default:
-			out[i].Err = batchEntryFailureError(entry)
+			out[i].Err = d.mapBatchEntryFailure(entry, "DeleteBatch")
 		}
 	}
 	return out, nil
@@ -420,8 +499,8 @@ func (d *DropboxFS) UploadFilesBatch(ctx context.Context, items []types.UploadFi
 
 	var entries []batchEntryTagged
 	err = d.withClassifiedRetry(ctx, "UploadFilesBatchFinish", func() error {
-		d.finishBatchMu.Lock()
-		defer d.finishBatchMu.Unlock()
+		d.writeBatchMu.Lock()
+		defer d.writeBatchMu.Unlock()
 		var ferr error
 		entries, ferr = client.uploadSessionFinishBatch(ctx, finishEntries)
 		return ferr
@@ -436,14 +515,14 @@ func (d *DropboxFS) UploadFilesBatch(ctx context.Context, items []types.UploadFi
 		i := finishIdx[j]
 		switch strings.TrimSpace(entry.Tag) {
 		case "success":
-			var meta fileMetadata
-			if err := json.Unmarshal(entry.Metadata, &meta); err != nil {
-				out[i].Err = fmt.Errorf("dropbox: decode success metadata: %w", err)
+			meta, err := decodeBatchSuccessFile(entry)
+			if err != nil {
+				out[i].Err = err
 				continue
 			}
 			out[i].File = d.metaToFile(meta, folderBasePath(meta, basePaths[i]))
 		default:
-			out[i].Err = batchEntryFailureError(entry)
+			out[i].Err = d.mapBatchEntryFailure(entry, "UploadFilesBatchFinish")
 		}
 	}
 	if d.session.degradation != nil {

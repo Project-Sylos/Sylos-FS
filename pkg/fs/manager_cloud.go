@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"codeberg.org/Sylos/Sylos-FS/pkg/cloud"
@@ -219,18 +218,12 @@ func (m *ServiceManager) ListCloudChildren(ctx context.Context, connectionID, id
 	} else {
 		folder, err = cloud.BrowseFolder(identifier, "", driveID)
 		if err == nil && driveID != "" {
-			// Preserve active-root namespace/path context for nested listings.
+			// Preserve active-root namespace/drive context for nested listings via ParentId.
+			// Do not rewrite Type to team_folder/shared_folder here: that makes Dropbox treat
+			// a normal child as a namespace mount and ListChildren returns the mount root
+			// instead of the folder (e.g. opening a folder under My Dropbox).
 			if folder.ParentId == "" {
 				folder.ParentId = driveID
-			}
-			if folder.Type == "" || folder.Type == types.NodeTypeFolder {
-				if strings.HasPrefix(driveID, "/") {
-					folder.Type = cloud.RootTypeSharedFolder
-				} else {
-					// Namespace Path-Root (team space / team folder / shared folder id).
-					// Graph drive ids also land here; adapters key off ParentId as drive id.
-					folder.Type = cloud.RootTypeTeamFolder
-				}
 			}
 		}
 	}

@@ -370,6 +370,13 @@ type dropboxContext struct {
 
 func parseDropboxContext(folder types.Folder) dropboxContext {
 	ctx := dropboxContext{RootType: cloud.RootTypeUserRoot}
+	// Sentinel from ListRoots / browse; never a real Dropbox file id.
+	if strings.TrimSpace(folder.ServiceID) == "root" &&
+		folder.Type != cloud.RootTypeTeamSpace &&
+		folder.Type != cloud.RootTypeTeamFolder &&
+		folder.Type != cloud.RootTypeSharedFolder {
+		folder.Type = cloud.RootTypeUserRoot
+	}
 	switch folder.Type {
 	case cloud.RootTypeUserRoot:
 		ctx.NamespaceID = folder.ParentId

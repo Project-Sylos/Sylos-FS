@@ -19,14 +19,14 @@ import (
 
 // ClassifyDropboxError maps Dropbox API errors to FS retry buckets.
 //
-// Policy: Dropbox returns explicit HTTP semantics — we only sleep the FS on true rate
-// limits (HTTP 429 + Retry-After). Everything else is a known failure; retrying or
-// inflating backoff will not fix path, permission, quota, or conflict errors.
+// Policy: HTTP 429 is an explicit rate limit. path/too_many_write_operations is Dropbox
+// namespace write lock contention (often on 409 or as a batch entry failure); Dropbox
+// documents backoff+retry, not a permanent failure. Path/permission/quota/conflict stay fatal.
 //
 // Reference: https://developers.dropbox.com/error-handling-guide
 //
 // Buckets:
-//   - FSErrorThrottle — HTTP 429 only
+//   - FSErrorThrottle — HTTP 429, or too_many_write_operations (lock contention)
 //   - FSErrorRetryable — HTTP 401 (OAuth refresh; not a sleep/backoff case)
 //   - FSErrorFatal — all other API and transport errors (tag preserved as ErrorCode for logs)
 func ClassifyDropboxError(err error) types.FSErrorClassification {
@@ -44,6 +44,10 @@ func ClassifyDropboxError(err error) types.FSErrorClassification {
 	}
 
 	return types.FSErrorClassification{Bucket: types.FSErrorFatal, ErrorCode: "unknown"}
+}
+
+func isDropboxWriteContentionTag(tag string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(tag)), "too_many_write_operations")
 }
 
 func dropboxErrorCode(apiErr *APIError) string {
@@ -69,6 +73,9 @@ func classifyDropboxAPIError(status int, code string) types.FSErrorClassificatio
 			return code
 		}
 		return fallback
+	}
+	if isDropboxWriteContentionTag(code) {
+		return types.FSErrorClassification{Bucket: types.FSErrorThrottle, ErrorCode: classCode("too_many_write_operations")}
 	}
 	switch status {
 	case http.StatusUnauthorized:

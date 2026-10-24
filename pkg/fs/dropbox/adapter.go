@@ -25,8 +25,11 @@ type DropboxFS struct {
 	ctx       dropboxContext
 	masterKey []byte
 
-	// finishBatchMu serializes upload_session/finish_batch (Dropbox: one job per account at a time).
-	finishBatchMu sync.Mutex
+	// writeBatchMu serializes mutating batch RPCs (create_folder_batch, delete_batch,
+	// upload_session/finish_batch). Concurrent writes in the same Dropbox namespace cause
+	// path/too_many_write_operations lock contention; Dropbox recommends batching and
+	// avoiding parallel state-modifying calls.
+	writeBatchMu sync.Mutex
 }
 
 func (d *DropboxFS) client(ctx context.Context) (*Client, error) {

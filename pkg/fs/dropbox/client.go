@@ -35,12 +35,21 @@ func (e *APIError) Error() string {
 		return "dropbox: unknown error"
 	}
 	if e.ErrorSummary != "" {
-		return fmt.Sprintf("dropbox: %s (HTTP %d)", e.ErrorSummary, e.Status)
+		if e.Status > 0 {
+			return fmt.Sprintf("dropbox: %s (HTTP %d)", e.ErrorSummary, e.Status)
+		}
+		return "dropbox: " + e.ErrorSummary
 	}
 	if len(e.Body) > 0 {
-		return fmt.Sprintf("dropbox: HTTP %d tag=%q body=%s", e.Status, e.ErrorTag, truncate(string(e.Body), 200))
+		if e.Status > 0 {
+			return fmt.Sprintf("dropbox: HTTP %d tag=%q body=%s", e.Status, e.ErrorTag, truncate(string(e.Body), 200))
+		}
+		return fmt.Sprintf("dropbox: tag=%q body=%s", e.ErrorTag, truncate(string(e.Body), 200))
 	}
-	return fmt.Sprintf("dropbox: HTTP %d tag=%q", e.Status, e.ErrorTag)
+	if e.Status > 0 {
+		return fmt.Sprintf("dropbox: HTTP %d tag=%q", e.Status, e.ErrorTag)
+	}
+	return fmt.Sprintf("dropbox: tag=%q", e.ErrorTag)
 }
 
 func truncate(s string, n int) string {

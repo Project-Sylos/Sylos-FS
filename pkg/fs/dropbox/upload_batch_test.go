@@ -61,11 +61,12 @@ func TestUploadFilesBatchStartAppendFinish(t *testing.T) {
 			finishEntries = arg.Entries
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
+			// Real finish_batch success flattens FileMetadata onto the entry (no nested "metadata").
 			_, _ = w.Write([]byte(`{
 				".tag":"complete",
 				"entries":[
-					{".tag":"success","metadata":{".tag":"file","id":"id:a","name":"a.txt","path_display":"/a.txt","path_lower":"/a.txt","size":5}},
-					{".tag":"success","metadata":{".tag":"file","id":"id:b","name":"b.txt","path_display":"/b.txt","path_lower":"/b.txt","size":3}}
+					{".tag":"success","id":"id:a","name":"a.txt","path_display":"/a.txt","path_lower":"/a.txt","size":5},
+					{".tag":"success","id":"id:b","name":"b.txt","path_display":"/b.txt","path_lower":"/b.txt","size":3}
 				]
 			}`))
 		default:
@@ -102,6 +103,20 @@ func TestUploadFilesBatchStartAppendFinish(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[0].Tag != "success" || entries[1].Tag != "success" {
 		t.Fatalf("entries=%+v", entries)
+	}
+	metaA, err := decodeBatchSuccessFile(entries[0])
+	if err != nil {
+		t.Fatalf("decode a: %v", err)
+	}
+	if metaA.ID != "id:a" || metaA.Name != "a.txt" || metaA.Size != 5 {
+		t.Fatalf("metaA=%+v", metaA)
+	}
+	metaB, err := decodeBatchSuccessFile(entries[1])
+	if err != nil {
+		t.Fatalf("decode b: %v", err)
+	}
+	if metaB.ID != "id:b" || metaB.Name != "b.txt" || metaB.Size != 3 {
+		t.Fatalf("metaB=%+v", metaB)
 	}
 	mu.Lock()
 	defer mu.Unlock()

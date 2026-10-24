@@ -33,17 +33,22 @@ func TestClassifyDropboxErrorThrottle429(t *testing.T) {
 	}
 }
 
-func TestClassifyDropboxError409TooManyWriteOperationsIsFatal(t *testing.T) {
+func TestClassifyDropboxErrorTooManyWriteOperationsIsThrottle(t *testing.T) {
 	err := &APIError{
 		Status:   http.StatusConflict,
 		ErrorTag: "too_many_write_operations",
 	}
 	class := ClassifyDropboxError(err)
-	if class.Bucket != types.FSErrorFatal {
-		t.Fatalf("got %+v want fatal", class)
+	if class.Bucket != types.FSErrorThrottle {
+		t.Fatalf("got %+v want throttle", class)
 	}
 	if class.ErrorCode != "too_many_write_operations" {
 		t.Fatalf("ErrorCode=%q", class.ErrorCode)
+	}
+	nested := &APIError{ErrorTag: "path/too_many_write_operations"}
+	class = ClassifyDropboxError(nested)
+	if class.Bucket != types.FSErrorThrottle {
+		t.Fatalf("nested got %+v want throttle", class)
 	}
 }
 

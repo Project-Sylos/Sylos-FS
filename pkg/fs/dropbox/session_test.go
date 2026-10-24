@@ -31,6 +31,23 @@ func TestParseDropboxContext_structuralSharedMount(t *testing.T) {
 	}
 }
 
+func TestParseDropboxContext_rootSentinelAsFolder(t *testing.T) {
+	ctx := parseDropboxContext(types.Folder{
+		ServiceID: "root",
+		ParentId:  "ns-home",
+		Type:      types.NodeTypeFolder,
+	})
+	if ctx.RootType != cloud.RootTypeUserRoot {
+		t.Fatalf("RootType=%q want user_root", ctx.RootType)
+	}
+	if ctx.NamespaceID != "ns-home" {
+		t.Fatalf("NamespaceID=%q", ctx.NamespaceID)
+	}
+	if ctx.FolderRef != "" {
+		t.Fatalf("FolderRef=%q want empty (virtual root)", ctx.FolderRef)
+	}
+}
+
 func TestParseDropboxContext_explicitTeamFolderType(t *testing.T) {
 	ctx := parseDropboxContext(types.Folder{
 		ServiceID: "14689517939",

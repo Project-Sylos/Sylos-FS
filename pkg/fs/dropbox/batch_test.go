@@ -6,11 +6,15 @@ package dropbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"codeberg.org/Sylos/Sylos-FS/pkg/credentials"
+	"codeberg.org/Sylos/Sylos-FS/pkg/types"
 )
 
 func TestCreateFolderBatchSyncComplete(t *testing.T) {
@@ -46,6 +50,80 @@ func TestCreateFolderBatchSyncComplete(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[0].Tag != "success" || entries[1].Tag != "failure" {
 		t.Fatalf("entries=%+v", entries)
+	}
+	meta, err := decodeBatchSuccessFolder(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ID != "id:1" || meta.Name != "a" {
+		t.Fatalf("meta=%+v", meta)
+	}
+	failErr := batchEntryFailureError(entries[1])
+	apiErr, ok := failErr.(*APIError)
+	if !ok {
+		t.Fatalf("want *APIError, got %T", failErr)
+	}
+	if apiErr.ErrorTag != "path/conflict/folder" {
+		t.Fatalf("ErrorTag=%q want path/conflict/folder", apiErr.ErrorTag)
+	}
+	if apiErr.Status != http.StatusConflict {
+		t.Fatalf("Status=%d want 409", apiErr.Status)
+	}
+	if !strings.Contains(apiErr.Error(), "path/conflict/folder") {
+		t.Fatalf("Error()=%q", apiErr.Error())
+	}
+}
+
+func TestBatchEntryFailureErrorDoesNotForce409(t *testing.T) {
+	entries, err := decodeBatchEntries(json.RawMessage(`[
+		{".tag":"failure","failure":{".tag":"path","path":{".tag":"not_found"}}},
+		{".tag":"failure","failure":{".tag":"path","path":{".tag":"too_many_write_operations"}}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notFound := batchEntryFailureError(entries[0]).(*APIError)
+	if notFound.ErrorTag != "path/not_found" || notFound.Status != 0 {
+		t.Fatalf("not_found: tag=%q status=%d", notFound.ErrorTag, notFound.Status)
+	}
+	writes := batchEntryFailureError(entries[1]).(*APIError)
+	if writes.ErrorTag != "path/too_many_write_operations" || writes.Status != 0 {
+		t.Fatalf("writes: tag=%q status=%d", writes.ErrorTag, writes.Status)
+	}
+}
+
+func TestMapBatchEntryFailureWriteContentionIsRateLimited(t *testing.T) {
+	d := &DropboxFS{session: &Session{degradation: types.NewFSDegradationState()}}
+	entries, err := decodeBatchEntries(json.RawMessage(`[
+		{".tag":"failure","failure":{".tag":"path","path":{".tag":"too_many_write_operations"}}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped := d.mapBatchEntryFailure(entries[0], "CreateFolderBatch")
+	var rl *credentials.RateLimitedError
+	if !errors.As(mapped, &rl) || rl == nil {
+		t.Fatalf("want RateLimitedError, got %T %v", mapped, mapped)
+	}
+	if !strings.Contains(mapped.Error(), "too_many_write_operations") {
+		t.Fatalf("Error()=%q", mapped.Error())
+	}
+	snap := d.session.degradation.DegradationState()
+	if snap.RateLimitedUntil.IsZero() {
+		t.Fatal("expected degradation RateLimitedUntil after write contention")
+	}
+}
+
+func TestDecodeBatchSuccessFileRejectsNestedMetadataShape(t *testing.T) {
+	// Old incorrect fixture shape: nested metadata with empty top-level id/name.
+	entries, err := decodeBatchEntries(json.RawMessage(`[
+		{".tag":"success","metadata":{".tag":"file","id":"id:a","name":"a.txt","size":5}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeBatchSuccessFile(entries[0]); err == nil {
+		t.Fatal("expected error for nested-metadata finish_batch shape")
 	}
 }
 
@@ -107,5 +185,9 @@ func TestDeleteBatchSyncComplete(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[0].Tag != "success" || entries[1].Tag != "failure" {
 		t.Fatalf("entries=%+v", entries)
+	}
+	delFail := batchEntryFailureError(entries[1]).(*APIError)
+	if delFail.ErrorTag != "path_lookup/not_found" || delFail.Status != 0 {
+		t.Fatalf("delete fail: tag=%q status=%d", delFail.ErrorTag, delFail.Status)
 	}
 }
