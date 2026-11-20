@@ -84,11 +84,15 @@ func (f *SftpFS) ListChildren(ctx context.Context, identifier string, depth *int
 				continue
 			}
 			if entry.Mode().IsRegular() {
+				if types.IsSkippedLinkStubName(name) {
+					continue
+				}
 				result.Files = append(result.Files, types.File{
 					ServiceID:    fullPath,
 					ParentId:     listPath,
 					ParentPath:   parentRel,
 					DisplayName:  name,
+					Extension:    types.FileExtension(name),
 					LocationPath: types.NormalizeLocationPath(rel),
 					LastUpdated:  lastUpdated,
 					Size:         entry.Size(),
@@ -182,6 +186,7 @@ func (f *SftpFS) CreateFile(ctx context.Context, parentID, name string, size int
 			ParentId:     parent,
 			ParentPath:   parentRel,
 			DisplayName:  name,
+			Extension:    types.FileExtension(name),
 			LocationPath: types.NormalizeLocationPath(relativize(name, parentRel)),
 			LastUpdated:  info.ModTime().UTC().Format(time.RFC3339),
 			Size:         size,

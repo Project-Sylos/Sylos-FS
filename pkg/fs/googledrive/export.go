@@ -62,7 +62,7 @@ var exportSpecs = map[string]exportSpec{
 }
 
 func listChildrenFields() string {
-	return "files(id,name,mimeType,size,modifiedTime,parents,shortcutDetails(targetId,targetMimeType))"
+	return "files(id,name,mimeType,size,modifiedTime,parents)"
 }
 
 func exportSpecForMIME(mimeType string) (exportSpec, bool) {
@@ -87,11 +87,12 @@ func isGoogleAppsMIME(mimeType string) bool {
 }
 
 // listableDriveFile reports whether a Drive item should appear as a migratable file.
+// Shortcuts are omitted by type (V1 does not follow link targets).
 func listableDriveFile(f *drive.File) bool {
 	if f == nil || f.MimeType == "" {
 		return false
 	}
-	if f.MimeType == mimeGoogleFolder {
+	if f.MimeType == mimeGoogleFolder || f.MimeType == mimeGoogleShortcut {
 		return false
 	}
 	effectiveMIME := effectiveContentMIME(f)
@@ -108,13 +109,6 @@ func listableDriveFile(f *drive.File) bool {
 func effectiveContentMIME(f *drive.File) string {
 	if f == nil {
 		return ""
-	}
-	if f.MimeType == mimeGoogleShortcut && f.ShortcutDetails != nil {
-		if f.ShortcutDetails.TargetMimeType != "" {
-			return f.ShortcutDetails.TargetMimeType
-		}
-		// Shortcut without target MIME: OpenRead will resolve the target metadata.
-		return mimeGoogleShortcut
 	}
 	return f.MimeType
 }
@@ -161,42 +155,27 @@ func ensureExtension(name, ext string) string {
 
 func (d *DriveFS) openDriveFileContent(ctx context.Context, srv *drive.Service, fileID string) (io.ReadCloser, error) {
 	meta, err := srv.Files.Get(fileID).
-		Fields("mimeType,shortcutDetails(targetId,targetMimeType)").
+		Fields("mimeType").
 		SupportsAllDrives(true).
 		Do()
 	if err != nil {
 		return nil, err
 	}
 
-	contentID := fileID
-	contentMIME := meta.MimeType
 	if meta.MimeType == mimeGoogleShortcut {
-		if meta.ShortcutDetails == nil || meta.ShortcutDetails.TargetId == "" {
-			return nil, fmt.Errorf("google drive: shortcut %s has no target", fileID)
-		}
-		contentID = meta.ShortcutDetails.TargetId
-		contentMIME = meta.ShortcutDetails.TargetMimeType
-		if contentMIME == "" {
-			target, err := srv.Files.Get(contentID).
-				Fields("mimeType").
-				SupportsAllDrives(true).
-				Do()
-			if err != nil {
-				return nil, fmt.Errorf("google drive: resolve shortcut target %s: %w", contentID, err)
-			}
-			contentMIME = target.MimeType
-		}
+		return nil, fmt.Errorf("google drive: shortcuts are not migrated (%s)", fileID)
 	}
 
+	contentMIME := meta.MimeType
 	if specs := exportMIMEsForType(contentMIME); len(specs) > 0 {
-		body, err := d.exportWorkspaceWithFallbacks(ctx, srv, contentID, specs)
+		body, err := d.exportWorkspaceWithFallbacks(ctx, srv, fileID, specs)
 		if err != nil {
 			return nil, err
 		}
 		return body, nil
 	}
 
-	resp, err := srv.Files.Get(contentID).SupportsAllDrives(true).Download()
+	resp, err := srv.Files.Get(fileID).SupportsAllDrives(true).Download()
 	if err != nil {
 		return nil, err
 	}

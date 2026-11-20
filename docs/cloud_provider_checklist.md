@@ -24,6 +24,7 @@ Use this checklist when adding a new OAuth cloud provider. Google Drive (`pkg/fs
   - Optional **`FSOpenWriteWithSize`** when the provider needs declared content length for chunked upload sessions (Box). ME prefers this over bare `OpenWrite` when present.
   - **Upload streaming** — `OpenWrite` must stream fragments/parts on `Write` (or pipe-concurrent upload). No full-file temp spill / close-only bulk upload. See Sylos-FS README “Upload streaming contract”.
   - **`FSStorageInfo`** (`GetStorageInfo`) — report account/volume free space when the provider supports it; return `Available: false` when not (SFTP). Local uses `statfs` / `GetDiskFreeSpaceEx`; Google Drive `about.storageQuota`; Dropbox `users/get_space_usage`; Box `/users/me`; OneDrive/SharePoint Graph `drive.quota`; Spectra returns a deterministic fake.
+  - **Links / shortcuts (V1)** — omit by item type/name only; do not follow targets. Local/SFTP: Lstat / mode bits (symlinks, junctions). Google Drive: skip `application/vnd.google-apps.shortcut`. Dropbox: skip `symlink_info`. OneDrive/SharePoint: skip `remoteItem` (and `package`). Box: only `file`/`folder` (drops `web_link`). Also omit Windows `.lnk` / Internet `.url` by basename (`types.IsSkippedLinkStubName`) on all adapters; local macOS also omits Finder aliases via `com.apple.FinderInfo`.
 5. **Blank import** — Register factory in `pkg/fs/cloud_register.go`.
 6. **Tests** — Classify errors, credential encrypt/decrypt round-trip (no live API required).
 

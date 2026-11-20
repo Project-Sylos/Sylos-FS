@@ -51,7 +51,7 @@ func TestBoxFSExposesDegradationState(t *testing.T) {
 	st := types.NewFSDegradationState()
 	d := &BoxFS{session: &Session{degradation: st}}
 	if d.GetDegradationState() != st {
-		t.Fatal("GetDegradationState must expose session degradation for ME AIMD + UI")
+		t.Fatal("GetDegradationState must expose session degradation for ME autoscaler + UI")
 	}
 	d.RecordSignal(types.FSDegradationSignal{
 		Kind:       types.FSDegradationRateLimit,

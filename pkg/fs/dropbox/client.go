@@ -286,16 +286,21 @@ type metadataTag struct {
 	Tag string `json:".tag"`
 }
 
+type symlinkInfo struct {
+	Target string `json:"target"`
+}
+
 type fileMetadata struct {
-	Tag            string `json:".tag"`
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	PathDisplay    string `json:"path_display"`
-	PathLower      string `json:"path_lower"`
-	Size           uint64 `json:"size"`
-	ClientMod      string `json:"client_modified"`
-	ServerMod      string `json:"server_modified"`
-	SharedFolderID string `json:"shared_folder_id"`
+	Tag            string       `json:".tag"`
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	PathDisplay    string       `json:"path_display"`
+	PathLower      string       `json:"path_lower"`
+	Size           uint64       `json:"size"`
+	ClientMod      string       `json:"client_modified"`
+	ServerMod      string       `json:"server_modified"`
+	SharedFolderID string       `json:"shared_folder_id"`
+	SymlinkInfo    *symlinkInfo `json:"symlink_info,omitempty"`
 }
 
 type listFolderResult struct {
@@ -372,9 +377,14 @@ func decodeEntries(raw []json.RawMessage) []fileMetadata {
 			continue
 		}
 		var meta fileMetadata
-		if json.Unmarshal(r, &meta) == nil {
-			out = append(out, meta)
+		if json.Unmarshal(r, &meta) != nil {
+			continue
 		}
+		// V1: skip Dropbox symlinks by type (symlink_info present); do not follow targets.
+		if meta.SymlinkInfo != nil {
+			continue
+		}
+		out = append(out, meta)
 	}
 	return out
 }

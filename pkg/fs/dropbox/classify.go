@@ -151,7 +151,7 @@ func (d *DropboxFS) withClassifiedRetry(ctx context.Context, operation string, o
 				if errors.As(err, &apiErr) {
 					retry = d.throttleBackoff(apiErr)
 				}
-				// Always record so ME AIMD + UI see RateLimitedUntil (even without Retry-After).
+				// Always record so ME autoscaler + UI see RateLimitedUntil (even without Retry-After).
 				d.recordDegradation(types.FSDegradationRateLimit, operation, retry)
 			},
 		},

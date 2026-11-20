@@ -26,6 +26,7 @@ func TestIsSilentJunkBasename(t *testing.T) {
 		{name: "desktop.ini", want: false},
 		{name: "file.tmp", want: false},
 		{name: "~$document.docx", want: false},
+		{name: "Shortcut.lnk", want: false},
 	}
 
 	for _, tt := range tests {
@@ -46,6 +47,8 @@ func TestListChildrenOmitsOnlySilentJunkBasenames(t *testing.T) {
 		"file.tmp",
 		"~$document.docx",
 		".DS_Store.bak",
+		"Shortcut.lnk",
+		"bookmark.url",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("test"), 0600); err != nil {
 			t.Fatal(err)

@@ -48,6 +48,7 @@ func ItemToFile(item DriveItem, basePath, driveID string) types.File {
 		ParentId:     itemDrive,
 		ParentPath:   basePath,
 		DisplayName:  item.Name,
+		Extension:    types.FileExtension(item.Name),
 		LocationPath: types.NormalizeLocationPath(loc),
 		LastUpdated:  item.LastModifiedDateTime,
 		Size:         item.Size,
@@ -132,11 +133,17 @@ func (a *AdapterOps) ListChildren(ctx context.Context, identifier string, depth 
 		driveID := a.EffectiveDriveID()
 		result = types.ListResult{}
 		for _, item := range items {
+			if !MigratableDriveItem(item) {
+				continue
+			}
 			if item.Folder != nil {
 				result.Folders = append(result.Folders, ItemToFolder(item, basePath, driveID))
 				continue
 			}
-			if item.File != nil || item.Folder == nil {
+			if item.File != nil {
+				if types.IsSkippedLinkStubName(item.Name) {
+					continue
+				}
 				result.Files = append(result.Files, ItemToFile(item, basePath, driveID))
 			}
 		}
@@ -248,6 +255,7 @@ func (a *AdapterOps) CreateFile(ctx context.Context, parentID, name string, size
 		ParentId:     firstNonEmpty(a.EffectiveDriveID(), parentID),
 		ParentPath:   basePath,
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: loc,
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,

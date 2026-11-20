@@ -20,7 +20,7 @@ type ClassifierFunc func(err error) FSErrorClassification
 //     LocalFS is the exception (no tokens / no Refresh).
 //  4. Embed or hold FSDegradationState; implement FSDegradationReporter including
 //     GetDegradationState() so ME can bridge RateLimitedUntil / TakeRecentHits
-//     (AIMD FS_THROTTLE + Progress Monitor rate-limit badge). Snapshot-only
+//     (autoscaler FS_THROTTLE + Progress Monitor rate-limit badge). Snapshot-only
 //     DegradationState()/RecordSignal is not enough.
 //  5. When src/dst share a backend instance, use one FSDegradationState for the group.
 //  6. Register ProviderID in Migration-Engine pkg/scaling/profile.go.

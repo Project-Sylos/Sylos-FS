@@ -60,6 +60,9 @@ func (d *BoxFS) ListChildren(ctx context.Context, identifier string, depth *int,
 			case "folder":
 				result.Folders = append(result.Folders, d.itemToFolder(e, basePath))
 			case "file":
+				if types.IsSkippedLinkStubName(e.Name) {
+					continue
+				}
 				result.Files = append(result.Files, d.itemToFile(e, basePath))
 			}
 		}
@@ -88,6 +91,7 @@ func (d *BoxFS) itemToFile(item Item, basePath string) types.File {
 		ParentId:     parentIDOf(item),
 		ParentPath:   basePath,
 		DisplayName:  item.Name,
+		Extension:    types.FileExtension(item.Name),
 		LocationPath: types.NormalizeLocationPath(loc),
 		LastUpdated:  item.ModifiedAt,
 		Size:         item.Size,
@@ -205,6 +209,7 @@ func (d *BoxFS) CreateFile(ctx context.Context, parentID, name string, size int6
 		ParentId:     parentID,
 		ParentPath:   basePath,
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: loc,
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,

@@ -176,11 +176,15 @@ func (l *LocalFS) listChildrenOnce(ctx context.Context, identifier string) (type
 			}
 
 			if childCopyableAsFile(fi) {
+				if omitListedFile(name, fullPath) {
+					continue
+				}
 				result.Files = append(result.Files, types.File{
 					ServiceID:    fullPath,
 					ParentId:     identifier,
 					ParentPath:   parentRelPath,
 					DisplayName:  name,
+					Extension:    types.FileExtension(name),
 					LocationPath: rel,
 					LastUpdated:  lastUpdated,
 					Size:         fi.Size(),
@@ -217,6 +221,10 @@ func (l *LocalFS) openReadOnce(ctx context.Context, fileID string) (io.ReadClose
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", ErrNotRegularFile, fileID)
+	}
+	base := filepath.Base(fileID)
+	if omitListedFile(base, fileID) {
 		return nil, fmt.Errorf("%w: %s", ErrNotRegularFile, fileID)
 	}
 	file, err := os.Open(fileID)
@@ -421,6 +429,7 @@ func (l *LocalFS) createFileOnce(parentID, name string, size int64) (types.File,
 		ParentId:     parentID,
 		ParentPath:   parentRelPath,
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: relPath,
 		LastUpdated:  info.ModTime().Format(time.RFC3339),
 		Size:         size,
