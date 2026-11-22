@@ -35,7 +35,7 @@ The `LocalFS` adapter provides access to the local operating system filesystem. 
 - **Path normalization**: Automatically normalizes paths to use forward slashes
 - **Root-relative paths**: Maintains logical paths relative to a configured root
 - **Unrestricted browsing**: Can be configured to allow browsing outside the root path
-- **Silent junk omission**: Directory listings omit only `.DS_Store` and `Thumbs.db`, matched case-insensitively
+- **Silent junk / link-stub omission**: Directory listings omit `.DS_Store` / `Thumbs.db`, Windows `.lnk` / Internet `.url`, and (on macOS) Finder aliases via FinderInfo; matched without following targets
 - **Optional page cache hints**: See below
 
 #### Page cache hints (POSIX fadvise)

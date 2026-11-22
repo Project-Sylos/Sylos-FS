@@ -85,8 +85,8 @@ func TestListableDriveFile(t *testing.T) {
 			TargetMimeType: mimeGoogleDocument,
 		},
 	}
-	if !listableDriveFile(shortcut) {
-		t.Fatal("shortcut to doc should be listable")
+	if listableDriveFile(shortcut) {
+		t.Fatal("shortcuts must not be listable (V1 skips links by type)")
 	}
 }
 
@@ -97,7 +97,12 @@ func TestEffectiveContentMIME(t *testing.T) {
 			TargetMimeType: mimeGoogleSheet,
 		},
 	}
-	if got := effectiveContentMIME(shortcut); got != mimeGoogleSheet {
+	// Type only: do not resolve shortcut target MIME.
+	if got := effectiveContentMIME(shortcut); got != mimeGoogleShortcut {
+		t.Fatalf("got %q want %q", got, mimeGoogleShortcut)
+	}
+	pdf := &drive.File{MimeType: "application/pdf"}
+	if got := effectiveContentMIME(pdf); got != "application/pdf" {
 		t.Fatalf("got %q", got)
 	}
 }

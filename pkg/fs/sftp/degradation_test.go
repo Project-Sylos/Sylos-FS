@@ -14,7 +14,7 @@ func TestSftpFSExposesDegradationState(t *testing.T) {
 	st := types.NewFSDegradationState()
 	f := &SftpFS{session: &Session{degradation: st}}
 	if f.GetDegradationState() != st {
-		t.Fatal("GetDegradationState must expose session degradation for ME AIMD + UI")
+		t.Fatal("GetDegradationState must expose session degradation for ME autoscaler + UI")
 	}
 	f.RecordSignal(types.FSDegradationSignal{
 		Kind:       types.FSDegradationRateLimit,

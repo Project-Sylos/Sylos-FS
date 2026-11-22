@@ -250,7 +250,7 @@ func batchEntryFailureError(entry batchEntryTagged) error {
 
 // mapBatchEntryFailure turns a per-entry failure into an ME-visible error.
 // Write lock contention becomes credentials.RateLimitedError so reportTaskOutcome
-// yields rate_limited (and AIMD sees degradation) instead of burning copy retries.
+// yields rate_limited (and the autoscaler sees degradation) instead of burning copy retries.
 func (d *DropboxFS) mapBatchEntryFailure(entry batchEntryTagged, operation string) error {
 	err := batchEntryFailureError(entry)
 	if !isDropboxWriteContentionError(err) {

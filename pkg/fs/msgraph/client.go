@@ -203,12 +203,30 @@ type DriveItem struct {
 	LastModifiedDateTime string    `json:"lastModifiedDateTime"`
 	Folder               *struct{} `json:"folder,omitempty"`
 	File                 *struct{} `json:"file,omitempty"`
-	ParentReference      *struct {
+	// RemoteItem marks a shortcut / shared-link stub into another drive. V1 skips these.
+	RemoteItem *struct {
+		ID string `json:"id"`
+	} `json:"remoteItem,omitempty"`
+	Package *struct {
+		Type string `json:"type"`
+	} `json:"package,omitempty"`
+	ParentReference *struct {
 		DriveID string `json:"driveId"`
 		ID      string `json:"id"`
 		Path    string `json:"path"`
 	} `json:"parentReference,omitempty"`
 	DownloadURL string `json:"@microsoft.graph.downloadUrl,omitempty"`
+}
+
+// MigratableDriveItem reports whether an item is a real folder/file (not a link stub).
+func MigratableDriveItem(item DriveItem) bool {
+	if item.RemoteItem != nil {
+		return false
+	}
+	if item.Package != nil {
+		return false
+	}
+	return item.Folder != nil || item.File != nil
 }
 
 // Drive is a Graph drive (document library / OneDrive).
@@ -251,7 +269,7 @@ func (c *Client) ListChildren(ctx context.Context, itemPath string, pageSize int
 	path := itemPath
 	if !strings.Contains(path, "?") {
 		path = path + "?$top=" + strconv.Itoa(pageSize) +
-			"&$select=id,name,size,lastModifiedDateTime,folder,file,parentReference"
+			"&$select=id,name,size,lastModifiedDateTime,folder,file,remoteItem,package,parentReference"
 	}
 	var all []DriveItem
 	for path != "" {

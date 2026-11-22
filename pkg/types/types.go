@@ -52,11 +52,62 @@ type File struct {
 	ParentId     string
 	ParentPath   string // The parent's relative path (root-relative)
 	DisplayName  string
+	// Extension is the real file extension without a leading dot (e.g. "vbs", "pdf"),
+	// preferably from provider metadata (ext / fileExtension / MIME), else derived
+	// from the listing name. DisplayName stays the full FS basename (including any
+	// dots that are not this Extension). Folders do not set Extension.
+	Extension    string
 	LocationPath string
 	LastUpdated  string
 	DepthLevel   int
 	Size         int64
 	Type         string // "file"
+}
+
+// FileExtension returns the lower-case trailing extension of name without a
+// leading dot. Leading-dot names (".gitignore") yield "". Uses the final
+// path.Ext segment only (ILOVEYOU.txt.vbs -> "vbs").
+func FileExtension(name string) string {
+	base := path.Base(strings.TrimSpace(name))
+	if base == "" || base == "." || base == ".." {
+		return ""
+	}
+	if strings.HasPrefix(base, ".") && !strings.Contains(base[1:], ".") {
+		return ""
+	}
+	ext := path.Ext(base)
+	if ext == "" || ext == "." {
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(ext, "."))
+}
+
+// NormalizeExtension lowercases and trims a leading dot; empty stays empty.
+func NormalizeExtension(ext string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
+}
+
+// NameHasExtension reports whether name ends with "."+ext (case-insensitive).
+func NameHasExtension(name, ext string) bool {
+	ext = NormalizeExtension(ext)
+	if ext == "" {
+		return false
+	}
+	base := path.Base(strings.TrimSpace(name))
+	suffix := "." + ext
+	return len(base) > len(suffix) && strings.EqualFold(base[len(base)-len(suffix):], suffix)
+}
+
+// StripOverlappingExtension removes "."+ext from the end of name only when
+// NameHasExtension is true (guaranteed overlap). example.txt.txt + ext txt -> example.txt.
+func StripOverlappingExtension(name, ext string) string {
+	ext = NormalizeExtension(ext)
+	if !NameHasExtension(name, ext) {
+		return name
+	}
+	base := path.Base(strings.TrimSpace(name))
+	suffix := "." + ext
+	return base[:len(base)-len(suffix)]
 }
 
 func (f File) ID() string       { return f.ServiceID }

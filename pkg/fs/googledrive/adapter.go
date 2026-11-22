@@ -76,7 +76,7 @@ func (d *DriveFS) ListChildren(ctx context.Context, identifier string, depth *in
 				result.Folders = append(result.Folders, d.fileToFolder(f, basePath))
 				continue
 			}
-			if !listableDriveFile(f) {
+			if !listableDriveFile(f) || types.IsSkippedLinkStubName(f.Name) {
 				continue
 			}
 			result.Files = append(result.Files, d.fileToFile(f, basePath))
@@ -118,6 +118,7 @@ func (d *DriveFS) fileToFile(f *drive.File, basePath string) types.File {
 		ParentId:     firstParent(f.Parents),
 		ParentPath:   basePath,
 		DisplayName:  displayName,
+		Extension:    driveFileExtension(f, displayName),
 		LocationPath: types.NormalizeLocationPath(loc),
 		LastUpdated:  f.ModifiedTime,
 		Size:         f.Size,
@@ -130,6 +131,17 @@ func firstParent(parents []string) string {
 		return ""
 	}
 	return parents[0]
+}
+
+// driveFileExtension prefers Drive's fileExtension metadata, else the trailing
+// extension of the (possibly export-adjusted) display name.
+func driveFileExtension(f *drive.File, displayName string) string {
+	if f != nil {
+		if ext := types.NormalizeExtension(f.FileExtension); ext != "" {
+			return ext
+		}
+	}
+	return types.FileExtension(displayName)
 }
 
 func (d *DriveFS) OpenRead(ctx context.Context, fileID string) (io.ReadCloser, error) {
@@ -248,6 +260,7 @@ func (d *DriveFS) CreateFile(ctx context.Context, parentID, name string, size in
 		ParentId:     parentID,
 		ParentPath:   basePath,
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: loc,
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,

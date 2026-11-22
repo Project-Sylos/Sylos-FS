@@ -35,7 +35,7 @@ type FSDegradationSnapshot struct {
 }
 
 // FSDegradationReporter is implemented by adapters that expose degradation telemetry.
-// GetDegradationState is required for ME rate-limit bridging (AIMD FS_THROTTLE + UI badge).
+// GetDegradationState is required for ME rate-limit bridging (autoscaler FS_THROTTLE + UI badge).
 type FSDegradationReporter interface {
 	DegradationState() FSDegradationSnapshot
 	RecordSignal(FSDegradationSignal)

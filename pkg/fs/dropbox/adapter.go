@@ -123,6 +123,9 @@ func (d *DropboxFS) ListChildren(ctx context.Context, identifier string, depth *
 				continue
 			}
 			if e.Tag == "file" {
+				if types.IsSkippedLinkStubName(e.Name) {
+					continue
+				}
 				result.Files = append(result.Files, d.metaToFile(e, basePath))
 			}
 		}
@@ -205,6 +208,7 @@ func (d *DropboxFS) metaToFile(m fileMetadata, basePath string) types.File {
 		ParentId:     "",
 		ParentPath:   basePath,
 		DisplayName:  m.Name,
+		Extension:    types.FileExtension(m.Name),
 		LocationPath: types.NormalizeLocationPath(loc),
 		LastUpdated:  modTime(m),
 		Size:         int64(m.Size),
@@ -402,6 +406,7 @@ func (d *DropboxFS) CreateFile(ctx context.Context, parentID, name string, size 
 		ParentId:     parentStored,
 		ParentPath:   types.LogicalParentFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath)),
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: types.ChildLocationFromCreateMetadata(metadata, types.NormalizeLocationPath(d.root.LocationPath), name),
 		LastUpdated:  time.Now().UTC().Format(time.RFC3339),
 		Size:         size,

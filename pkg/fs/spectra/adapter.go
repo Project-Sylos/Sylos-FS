@@ -167,11 +167,15 @@ func (s *SpectraFS) convertListResult(listResult *sdk.ListResult, identifier str
 		})
 	}
 	for _, node := range listResult.Files {
+		if types.IsSkippedLinkStubName(node.Name) {
+			continue
+		}
 		result.Files = append(result.Files, types.File{
 			ServiceID:    node.ID,
 			ParentId:     identifier,
 			ParentPath:   types.NormalizeParentPath(node.ParentPath),
 			DisplayName:  node.Name,
+			Extension:    types.FileExtension(node.Name),
 			LocationPath: types.NormalizeLocationPath(node.Path),
 			LastUpdated:  node.LastUpdated.Format(time.RFC3339),
 			Size:         node.Size,
@@ -327,6 +331,7 @@ func (s *SpectraFS) CreateFile(ctx context.Context, parentID, name string, size 
 		ParentId:     parentID,
 		ParentPath:   parentPath,
 		DisplayName:  name,
+		Extension:    types.FileExtension(name),
 		LocationPath: types.NormalizeLocationPath(expectedPath),
 		LastUpdated:  time.Now().Format(time.RFC3339),
 		Size:         size,                      // Use provided size (may be 0 initially)
